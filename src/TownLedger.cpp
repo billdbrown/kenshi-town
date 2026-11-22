@@ -118,6 +118,34 @@ namespace
         return fallback;
     }
 
+    std::string factionName(Faction* f);
+
+    // The Hub's vanilla owner. Looked up by stringId so Give back works even
+    // after a reload, when the Hub already loads as ours.
+    const char* HUB_VANILLA_OWNER_SID = "42022-rebirth.mod"; // Holy Nation Outlaws
+
+    Faction* hubVanillaOwner()
+    {
+        return (ou && ou->factionMgr) ? ou->factionMgr->getFactionByStringID(HUB_VANILLA_OWNER_SID) : NULL;
+    }
+
+    // A claim made in play lets the player build in the Hub, but after a
+    // reload the town loads as Nameless and building is refused again: the
+    // save keeps the owner but not whatever setFaction registered. So when the
+    // Hub loads already ours, hand it over again (old owner, then us) once.
+    void reassertClaim(TownBase* hub)
+    {
+        if (!ou || !ou->player)
+            return;
+        Faction* mine = ou->player->getFaction();
+        Faction* vanilla = hubVanillaOwner();
+        if (hub->getFaction() != mine || !vanilla || vanilla == mine)
+            return;
+        hub->setFaction(vanilla, NULL);
+        hub->setFaction(mine, NULL);
+        DebugLog("TownLedger: Hub loaded as ours; claim re-applied (via " + factionName(vanilla) + ")");
+    }
+
     void updateHubCache()
     {
         TownBase* hub = findHub();
@@ -126,7 +154,15 @@ namespace
             g_hub = hub;
             g_hubOriginalFaction = hub ? hub->getFaction() : NULL;
             if (hub)
-                DebugLog("TownLedger: found town '" + hub->getName() + "'");
+            {
+                DebugLog("TownLedger: found town '" + hub->getName() + "' owned by " +
+                         factionName(hub->getFaction()));
+                if (ou && ou->player && hub->getFaction() == ou->player->getFaction())
+                {
+                    g_hubOriginalFaction = hubVanillaOwner();
+                    reassertClaim(hub);
+                }
+            }
         }
         if (!hub)
         {
@@ -981,6 +1017,13 @@ namespace
         return b;
     }
 
+    // The skin's X raises a "close" window button; nothing handled it.
+    void onWindowButton(MyGUI::Window* sender, const std::string& name)
+    {
+        if (name == "close")
+            sender->setVisible(false);
+    }
+
     void createWindow()
     {
         MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
@@ -991,6 +1034,7 @@ namespace
             "Kenshi_WindowCX", 0.68f, 0.2f, 0.3f, 0.55f,
             MyGUI::Align::Default, "Window", "TownLedgerWindow");
         g_window->setCaption("Town Ledger");
+        g_window->eventWindowButtonPressed += MyGUI::newDelegate(onWindowButton);
 
         MyGUI::Widget* client = g_window->getClientWidget();
         g_text = client->createWidgetReal<MyGUI::EditBox>(
