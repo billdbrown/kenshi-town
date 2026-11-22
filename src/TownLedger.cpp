@@ -1,7 +1,8 @@
 // Town Ledger: kenshi-town's in-game panel.
 //
-// Press F8 in game to toggle a window listing the player faction and, below
-// it, the Hub experiment: three questions about making the Hub the town.
+// Two HUD buttons, Ledger and Roster, open the ledger (the Hub's state, the
+// player faction, experiment and dev buttons) and the Town Roster (job
+// profiles). Escape closes both. The original Hub experiment asked:
 //
 //   1. Ore:   does hooking ZoneManager::getResource change what mines see?
 //   2. Claim: does TownBase::setFaction hand the Hub's buildings to the player?
@@ -76,9 +77,9 @@ namespace
         DebugLog("TownLedger: " + line);
     }
 
-    const int TOGGLE_KEY = VK_F8;
-    const int ROSTER_KEY = VK_F9;
-    bool g_rosterKeyWasDown = false;
+    // No hotkeys: the HUD buttons open the windows (Kenshi's controls.cfg
+    // already binds most F-keys, F8 screenshot and F9 quick load among them).
+    bool g_escWasDown = false;
     void onRosterClick(MyGUI::WidgetPtr); // the Town Roster, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
@@ -93,7 +94,6 @@ namespace
     MyGUI::EditBox* g_text = NULL;
     MyGUI::Button* g_claimButton = NULL;
     MyGUI::Button* g_devButton = NULL;
-    bool g_keyWasDown = false;
     int g_frame = 0;
 
     // ---- The Hub, cached from the main loop so hooks never search for it.
@@ -1428,7 +1428,7 @@ namespace
         g_devButton = addButton(client, 9, "TownLedgerDev", onDevClick);
         addButton(client, 10, "TownLedgerRemoveSelected", onRemoveSelectedClick)->setCaption("Remove selected");
         addButton(client, 11, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
-        addButton(client, 12, "TownLedgerRoster", onRosterClick)->setCaption("Roster (F9)");
+        addButton(client, 12, "TownLedgerRoster", onRosterClick)->setCaption("Roster");
 
         g_window->setVisible(false);
     }
@@ -1445,7 +1445,7 @@ namespace
             refresh();
     }
 
-    // ==== Town Roster (F9): job profiles, and who works which ================
+    // ==== Town Roster: job profiles, and who works which ================
     //
     // A profile is a named set of standing jobs, captured from a character the
     // player set up by hand. Each job remembers its building by name and
@@ -1891,8 +1891,8 @@ namespace
         bool inGame = ou && ou->player && ou->player->getAllPlayerCharacters().size() > 0;
         if (!g_hudLedger && inGame && MyGUI::Gui::getInstancePtr())
         {
-            g_hudLedger = hudButton(0.30f, "TownLedgerHudLedger", "Ledger (F8)", onHudLedgerClick);
-            g_hudRoster = hudButton(0.34f, "TownLedgerHudRoster", "Roster (F9)", onRosterClick);
+            g_hudLedger = hudButton(0.30f, "TownLedgerHudLedger", "Ledger", onHudLedgerClick);
+            g_hudRoster = hudButton(0.34f, "TownLedgerHudRoster", "Roster", onRosterClick);
         }
         if (g_hudLedger)
         {
@@ -1929,15 +1929,16 @@ namespace
             checkAssignedJobs();
         }
 
-        bool down = (GetAsyncKeyState(TOGGLE_KEY) & 0x8000) != 0;
-        if (down && !g_keyWasDown && kenshiHasFocus())
-            toggle();
-        g_keyWasDown = down;
-
-        bool rosterDown = (GetAsyncKeyState(ROSTER_KEY) & 0x8000) != 0;
-        if (rosterDown && !g_rosterKeyWasDown && kenshiHasFocus())
-            toggleRoster();
-        g_rosterKeyWasDown = rosterDown;
+        // Escape closes our windows, like Kenshi's own panels.
+        bool esc = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        if (esc && !g_escWasDown && kenshiHasFocus())
+        {
+            if (g_window)
+                g_window->setVisible(false);
+            if (g_roster)
+                g_roster->setVisible(false);
+        }
+        g_escWasDown = esc;
         if (g_frame % REFRESH_EVERY_N_FRAMES == 0)
         {
             refreshRoster();
@@ -1995,5 +1996,5 @@ __declspec(dllexport) void startPlugin()
     g_createChar = (CreateCharFn)KenshiLib::GetRealAddress(&RootObjectFactory::createRandomCharacter);
 
     loadProfiles();
-    DebugLog("TownLedger: ready, press F8 in game (F9 for the Town Roster)");
+    DebugLog("TownLedger: ready; Ledger and Roster buttons on the HUD");
 }
