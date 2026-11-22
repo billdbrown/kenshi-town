@@ -98,27 +98,54 @@ namespace
         return dx * dx + dz * dz <= g_hubRadius * g_hubRadius;
     }
 
+    std::string factionName(Faction* f);
+
+    size_t buildingCount(TownBase* t)
+    {
+        TownBuildingsManager* mgr = t->getBuildingsManager();
+        return mgr ? mgr->buildingEntities.size() : 0;
+    }
+
+    // More than one town object can be named "The Hub" (one with 0 buildings
+    // was picked on 2026-11-22, so the claim went to the wrong one). Prefer
+    // the active one with the most buildings; log every candidate when the
+    // set changes.
+    std::string g_hubCandidatesSeen;
+
     TownBase* findHub()
     {
         if (!shou || !shou->townList)
             return NULL;
         lektor<RootObject*>& towns = shou->townList->getAllTowns();
-        TownBase* fallback = NULL;
+        TownBase* best = NULL;
+        int bestScore = -1;
+        std::ostringstream seen;
         for (uint32_t i = 0; i < towns.size(); ++i)
         {
             TownBase* t = static_cast<TownBase*>(towns[i]);
-            if (!t)
+            if (!t || t->getName().find("Hub") == std::string::npos)
                 continue;
-            std::string name = t->getName();
-            if (name == "The Hub")
-                return t;
-            if (!fallback && name.find("Hub") != std::string::npos)
-                fallback = t;
+            size_t n = buildingCount(t);
+            bool active = t->isActive();
+            bool exact = t->getName() == "The Hub";
+            int score = (exact ? 1000000 : 0) + (active ? 100000 : 0) + int(n);
+            Ogre::Vector3 p = t->getPosition();
+            seen << "\n  " << t->getName() << " | " << factionName(t->getFaction()) << " | "
+                 << n << " buildings | " << (active ? "active" : "inactive") << " | at "
+                 << int(p.x) << "," << int(p.z) << " | " << (t->isTown() ? "Town" : "not a Town");
+            if (score > bestScore)
+            {
+                best = t;
+                bestScore = score;
+            }
         }
-        return fallback;
+        if (seen.str() != g_hubCandidatesSeen)
+        {
+            g_hubCandidatesSeen = seen.str();
+            DebugLog("TownLedger: towns named like the Hub:" + g_hubCandidatesSeen);
+        }
+        return best;
     }
-
-    std::string factionName(Faction* f);
 
     // The Hub's vanilla owner. Looked up by stringId so Give back works even
     // after a reload, when the Hub already loads as ours.
