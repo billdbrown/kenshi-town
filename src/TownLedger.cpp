@@ -111,6 +111,7 @@ namespace
     // the active one with the most buildings; log every candidate when the
     // set changes.
     std::string g_hubCandidatesSeen;
+    std::vector<TownBase*> g_hubTwins;
 
     TownBase* findHub()
     {
@@ -163,7 +164,43 @@ namespace
             g_hubCandidatesSeen = seen.str();
             DebugLog("TownLedger: towns at the Hub:" + g_hubCandidatesSeen);
         }
+
+        // Twins: other town objects with the same name at the same spot. The
+        // Hub loads as the real town plus an empty one, and new buildings get
+        // assigned to the empty one.
+        g_hubTwins.clear();
+        if (best)
+        {
+            Ogre::Vector3 c = best->getPosition();
+            for (uint32_t i = 0; i < towns.size(); ++i)
+            {
+                TownBase* t = static_cast<TownBase*>(towns[i]);
+                if (!t || t == best || t->getName() != best->getName())
+                    continue;
+                Ogre::Vector3 p = t->getPosition();
+                float dx = p.x - c.x, dz = p.z - c.z;
+                if (dx * dx + dz * dz < 100.0f * 100.0f)
+                    g_hubTwins.push_back(t);
+            }
+        }
         return best;
+    }
+
+    // Keep every twin owned by whoever owns the Hub, so a check that lands on
+    // the twin sees the same owner. Runs from the main loop and after Claim.
+    void syncHubTwins()
+    {
+        if (!g_hub)
+            return;
+        Faction* owner = g_hub->getFaction();
+        for (size_t i = 0; i < g_hubTwins.size(); ++i)
+        {
+            TownBase* t = g_hubTwins[i];
+            if (t->getFaction() == owner)
+                continue;
+            DebugLog("TownLedger: twin Hub " + factionName(t->getFaction()) + " -> " + factionName(owner));
+            t->setFaction(owner, NULL);
+        }
     }
 
     // The Hub's vanilla owner. Looked up by stringId so Give back works even
@@ -220,6 +257,7 @@ namespace
         g_hubZ = p.z;
         g_hubRadius = hub->getRadius();
         g_hubKnown = true;
+        syncHubTwins();
     }
 
     std::string factionName(Faction* f)
@@ -1132,6 +1170,7 @@ namespace
         Faction* to = ours ? g_hubOriginalFaction : mine;
         DebugLog("TownLedger: setFaction " + factionName(g_hub->getFaction()) + " -> " + factionName(to));
         g_hub->setFaction(to, NULL);
+        syncHubTwins();
 
         // The town's own faction doesn't move its buildings; hand them over
         // one by one (and back again).
