@@ -2557,6 +2557,14 @@ namespace
     // from the world map, not the town record, so a data mod can't do this.
     const char* CLEANUP_FILE = "mods\\TownLedger\\hub_cleanup.txt";
 
+    // Bill's choice (2026-11-22): keep the Longhouses, the Stationhouse and the
+    // Snailhouse; lose every other house and the broken street props.
+    const char* CLEANUP_DEFAULT[] = {
+        "Old Storm House", "Small Shack", "Bughouse", "L-House", "Residential Small",
+        "Holy Sinner Torch Broken", "Holy Street Torch Broken", "Holy Street Torch Snapped",
+        "Emperor Statue Broken", "Wind Generator Broken"};
+    const size_t CLEANUP_DEFAULT_COUNT = sizeof(CLEANUP_DEFAULT) / sizeof(CLEANUP_DEFAULT[0]);
+
     void cleanupList(std::set<std::string>& names)
     {
         names.clear();
@@ -2567,12 +2575,13 @@ namespace
             if (f)
             {
                 fprintf(f, "# Buildings removed from the Hub the first time it's claimed in a save.\n"
-                           "# One building name per line, exactly as the Buildings tab shows it.\n"
-                           "Old Storm House\nSmall Shack\n");
+                           "# One building name per line, exactly as the Buildings tab shows it.\n");
+                for (size_t i = 0; i < CLEANUP_DEFAULT_COUNT; ++i)
+                    fprintf(f, "%s\n", CLEANUP_DEFAULT[i]);
                 fclose(f);
             }
-            names.insert("Old Storm House");
-            names.insert("Small Shack");
+            for (size_t i = 0; i < CLEANUP_DEFAULT_COUNT; ++i)
+                names.insert(CLEANUP_DEFAULT[i]);
             return;
         }
         char line[256];
