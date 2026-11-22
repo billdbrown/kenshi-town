@@ -1670,13 +1670,18 @@ namespace
     {
         if (!g_reapplyPending || !g_hub)
             return;
-        size_t n = buildingCount(g_hub);
-        if (n == 0 || n != g_reapplyLastCount)
+        // Wait for both the Hub's buildings and the player's characters to
+        // finish loading: on 2026-11-22 the buildings settled first and the
+        // reapply found no citizens, because their names hadn't loaded yet.
+        size_t people = (ou && ou->player) ? ou->player->getAllPlayerCharacters().size() : 0;
+        size_t n = buildingCount(g_hub) * 1000 + people;
+        if (buildingCount(g_hub) == 0 || people == 0 || n != g_reapplyLastCount)
         {
             g_reapplyLastCount = n;
             return;
         }
         g_reapplyPending = false;
+        rebuildCitizensFromNames();
         std::string done = reapplyAll();
         actionLog("[roster] after load:" + (done.empty() ? std::string(" nobody has a profile") : done));
     }
