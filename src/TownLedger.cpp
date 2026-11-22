@@ -287,7 +287,7 @@ namespace
         {"Building Materials", 40},
         {"Iron Plates", 20},
         {"Copper Alloy Plates", 15},
-        {"Steel Bars", 10},
+        {"Steel bars", 10}, // "Steel Bars" is the storage building, not the item
         {"Electrical Components", 10},
         {"Fabrics", 10},
         {"Book", 20},
