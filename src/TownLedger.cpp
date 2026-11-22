@@ -61,6 +61,8 @@ namespace TaskerFields
 #include <mygui/MyGUI_TabItem.h>
 #include <mygui/MyGUI_TextBox.h>
 #include <mygui/MyGUI_ProgressBar.h>
+#include <kenshi/gui/DatapanelGUI.h>
+#include <kenshi/gui/DataPanelLine.h>
 
 #include "Squads.h"
 
@@ -3150,14 +3152,10 @@ namespace
         return out.str();
     }
 
-    void repairPicked(bool instantly)
+    // A ruin becomes an unfinished building in the base, for builders to put
+    // up with materials (or finished on the spot: dev).
+    void repairBuilding(Building* b, bool instantly)
     {
-        Building* b = buildingPicked();
-        if (!b)
-        {
-            actionLog("[buildings] pick a building in the list first");
-            return;
-        }
         if (!b->isDestroyed())
         {
             actionLog("[buildings] " + b->getName() + " isn't a ruin");
@@ -3168,8 +3166,107 @@ namespace
         std::string moved = moveIntoBase(b);
         actionLog("[buildings] repair " + std::string(instantly ? "now" : "ordered") + ": " + b->getName() + ": " +
                   describeRepairState(b) + "; " + moved + (instantly ? "" : " (needs builders and materials)"));
+    }
+
+    void repairPicked(bool instantly)
+    {
+        Building* b = buildingPicked();
+        if (!b)
+        {
+            actionLog("[buildings] pick a building in the list first");
+            return;
+        }
+        repairBuilding(b, instantly);
         g_bShown.clear();
         refreshBuildings();
+    }
+
+    // ---- Repair on Kenshi's own building panel, under Dismantle.
+    //
+    // Building::getGUIDestroyButton adds the Dismantle button to the panel a
+    // selected building opens (found 2026-11-22: the function using the
+    // "Dismantle" string, disk RVA 0x2FEA10, asks canDismantle through vtable
+    // +0x278; KenshiLib lists it at vtable +0x3A8). It's protected, so its
+    // address is read from live buildings' vtables and hooked there, once per
+    // distinct implementation. After it runs, a ruin in our Hub gets a Repair
+    // line; the line's callback repairs whatever building the panel was last
+    // filled for.
+    typedef void (*GuiButtonsFn)(Building*, DatapanelGUI*, int);
+    const size_t VT_GET_GUI_DESTROY_BUTTON = 0x3A8 / sizeof(void*);
+    const int PANEL_HOOK_MAX = 4;
+    GuiButtonsFn g_panelOrig[PANEL_HOOK_MAX] = {NULL, NULL, NULL, NULL};
+    void* g_panelTarget[PANEL_HOOK_MAX] = {NULL, NULL, NULL, NULL};
+    int g_panelHooks = 0;
+    Building* g_panelBuilding = NULL;
+
+    bool inHub(Building* b)
+    {
+        std::vector<Building*> all;
+        hubBuildings(all);
+        return std::find(all.begin(), all.end(), b) != all.end();
+    }
+
+    void onPanelRepair(DataPanelLine*)
+    {
+        Building* b = g_panelBuilding;
+        if (!b || !g_hub || !hubIsOurs() || !inHub(b))
+            return;
+        repairBuilding(b, false);
+        toast("Repair ordered: " + b->getName() + ". Builders will need materials.");
+    }
+
+    void addRepairLine(Building* b, DatapanelGUI* dp, int category)
+    {
+        if (!b || !dp || !g_hub || !b->isDestroyed() || !hubIsOurs() || !inHub(b))
+            return;
+        g_panelBuilding = b;
+        DataPanelLine_Button* line = dp->setLineButton("KenshiTownRepair", "Repair", category);
+        if (line && line->callback.empty())
+            line->callback = MyGUI::newDelegate(onPanelRepair);
+    }
+
+    template <int N>
+    void panelButtonsHook(Building* b, DatapanelGUI* dp, int category)
+    {
+        g_panelOrig[N](b, dp, category);
+        addRepairLine(b, dp, category);
+    }
+
+    GuiButtonsFn panelDetour(int n)
+    {
+        switch (n)
+        {
+        case 0: return panelButtonsHook<0>;
+        case 1: return panelButtonsHook<1>;
+        case 2: return panelButtonsHook<2>;
+        default: return panelButtonsHook<3>;
+        }
+    }
+
+    void hookBuildingPanels()
+    {
+        if (g_panelHooks >= PANEL_HOOK_MAX || !g_hub)
+            return;
+        std::vector<Building*> all;
+        hubBuildings(all);
+        for (size_t i = 0; i < all.size() && g_panelHooks < PANEL_HOOK_MAX; ++i)
+        {
+            void** vtable = *reinterpret_cast<void***>(all[i]);
+            void* fn = vtable[VT_GET_GUI_DESTROY_BUTTON];
+            bool known = false;
+            for (int k = 0; k < g_panelHooks; ++k)
+                known = known || g_panelTarget[k] == fn;
+            if (known)
+                continue;
+            int n = g_panelHooks++;
+            g_panelTarget[n] = fn;
+            std::ostringstream what;
+            what << "building panel buttons #" << n << " (" << all[i]->getName() << ")";
+            if (KenshiLib::SUCCESS != KenshiLib::AddHook(reinterpret_cast<intptr_t>(fn), panelDetour(n), &g_panelOrig[n]))
+                ErrorLog("TownLedger: could not hook " + what.str());
+            else
+                DebugLog("TownLedger: hooked " + what.str());
+        }
     }
 
     void onBuildingMoveToBase(MyGUI::WidgetPtr)
@@ -3461,6 +3558,52 @@ namespace
         return false;
     }
 
+    // The Town Hall: any Longhouse of the Hub's, repaired and standing. They
+    // start as ruins; Repair is on the building's own panel, under Dismantle.
+    bool qTownHall(QuestProgress& p)
+    {
+        p.have = 0;
+        p.need = 1;
+        p.text = "Ruined: select one, press Repair";
+        std::vector<Building*> all;
+        hubBuildings(all);
+        float best = -1.0f;
+        bool any = false;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            if (lowerCase(all[i]->getName()).find("longhouse") == std::string::npos)
+                continue;
+            any = true;
+            if (all[i]->isDestroyed())
+                continue;
+            float done = buildProgress(all[i]);
+            if (done > best)
+                best = done;
+        }
+        if (!any)
+            p.text = "No Longhouse left in the Hub";
+        if (best >= 1.0f)
+        {
+            p.have = 1;
+            p.text = "Repaired";
+            return true;
+        }
+        if (best >= 0.0f)
+        {
+            p.need = 100;
+            p.have = int(best * 100.0f);
+            std::ostringstream t;
+            t << "Repairing " << p.have << "%";
+            p.text = t.str();
+        }
+        return false;
+    }
+
+    bool qResearchBench(QuestProgress& p)
+    {
+        return qBuilt("Research Bench", p);
+    }
+
     bool qMaterialStorage(QuestProgress& p)
     {
         return qBuilt("Storage: Building Material", p);
@@ -3558,7 +3701,13 @@ namespace
     const Quest QUESTS[] = {
         {"Clear the old storm houses", "Dismantle them: their materials start your stockpile.", 200,
          qStormHousesCleared},
-        {"Build a building-materials store", "Build menu, Storage. Builders draw from it.", 300, qMaterialStorage},
+        {"Repair a Longhouse: your Town Hall", "Select a ruined Longhouse, press Repair. Builders do the rest.", 300,
+         qTownHall},
+        {"Set up a research bench", "Build a Small Research Bench inside the Town Hall.", 300, qResearchBench},
+        // KenshiLib exposes no research state, so the research is folded into
+        // the store it unlocks: the task finishes when the store is built.
+        {"Research storage, build a materials store", "Research Storage Boxes at the bench, then Build, Storage.",
+         300, qMaterialStorage},
         {"Open a stone mine", "Build a Stone Mine and set someone to work it.", 300, qStoneMine},
         {"Process stone into materials", "Build a Stone Processor next to the mine.", 300, qStoneProcessor},
         {"Take in your first citizen", "Drifters come to the gate. Accept one in the Roster.", 200, qFirstCitizen},
@@ -4113,6 +4262,7 @@ namespace
             deedTick();
             contractTick();
             questTick();
+            hookBuildingPanels();
             if (hubIsOurs())
             {
                 std::string merged = consolidateHub();
