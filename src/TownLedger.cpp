@@ -87,7 +87,6 @@ namespace
 
     MyGUI::Window* g_window = NULL;
     MyGUI::EditBox* g_text = NULL;
-    MyGUI::Button* g_oreButton = NULL;
     MyGUI::Button* g_claimButton = NULL;
     MyGUI::Button* g_devButton = NULL;
     bool g_keyWasDown = false;
@@ -287,7 +286,7 @@ namespace
     };
     OreSample g_ore[8] = {};       // indexed by MiningResource
     volatile long g_baseCalls = 0;
-    bool g_oreOverride = false;
+    bool g_oreOverride = true; // always on (Bill, 2026-11-22): no toggle
     bool g_loggedScale = false;
 
     float hubOreFor(MiningResource r)
@@ -1143,8 +1142,6 @@ namespace
     {
         if (g_text)
             g_text->setCaption(buildLedger());
-        if (g_oreButton)
-            g_oreButton->setCaption(g_oreOverride ? "Ore: ON" : "Ore: off");
         if (g_devButton)
             g_devButton->setCaption(g_devFast ? "Dev: FAST" : "Dev: off");
         if (g_claimButton)
@@ -1159,13 +1156,6 @@ namespace
         logReport("snapshot");
         if (g_hub)
             DebugLog("TownLedger: " + buildingCensus());
-    }
-
-    void onOreClick(MyGUI::WidgetPtr)
-    {
-        g_oreOverride = !g_oreOverride;
-        refresh();
-        logReport(g_oreOverride ? "ore override on" : "ore override off");
     }
 
     void onClaimClick(MyGUI::WidgetPtr)
@@ -1338,19 +1328,19 @@ namespace
         g_text->setEditWordWrap(true);
         g_text->setVisibleVScroll(true);
 
-        addButton(client, 0, "TownLedgerLog", onLogClick)->setCaption("Log it");
-        g_oreButton = addButton(client, 1, "TownLedgerOre", onOreClick);
-        g_claimButton = addButton(client, 2, "TownLedgerClaim", onClaimClick);
-        g_devButton = addButton(client, 3, "TownLedgerDev", onDevClick);
-        addButton(client, 4, "TownLedgerSupplies", onSuppliesClick)->setCaption("Supplies");
-        addButton(client, 5, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
-        addButton(client, 6, "TownLedgerRemoveSelected", onRemoveSelectedClick)->setCaption("Remove selected");
-        addButton(client, 7, "TownLedgerCaptureRole", onCaptureRoleClick)->setCaption("Capture role");
-        addButton(client, 8, "TownLedgerMakeCitizen", onMakeCitizenClick)->setCaption("Make citizen");
-        addButton(client, 9, "TownLedgerAssignRole", onAssignRoleClick)->setCaption("Assign role");
-        addButton(client, 10, "TownLedgerFreeCitizens", onFreeCitizensClick)->setCaption("Free citizens");
-        addButton(client, 11, "TownLedgerMoney", onMoneyClick)->setCaption("+5000 cats");
-        addButton(client, 12, "TownLedgerSpawnRecruit", onSpawnRecruitClick)->setCaption("Spawn recruit");
+        // Row 1: the labour test. Row 2: the town. Rows 3-4: development tools.
+        addButton(client, 0, "TownLedgerCaptureRole", onCaptureRoleClick)->setCaption("Capture role");
+        addButton(client, 1, "TownLedgerMakeCitizen", onMakeCitizenClick)->setCaption("Make citizen");
+        addButton(client, 2, "TownLedgerAssignRole", onAssignRoleClick)->setCaption("Assign role");
+        g_claimButton = addButton(client, 3, "TownLedgerClaim", onClaimClick);
+        addButton(client, 4, "TownLedgerFreeCitizens", onFreeCitizensClick)->setCaption("Free citizens");
+        addButton(client, 5, "TownLedgerLog", onLogClick)->setCaption("Log it");
+        addButton(client, 6, "TownLedgerSupplies", onSuppliesClick)->setCaption("Supplies");
+        addButton(client, 7, "TownLedgerMoney", onMoneyClick)->setCaption("+5000 cats");
+        addButton(client, 8, "TownLedgerSpawnRecruit", onSpawnRecruitClick)->setCaption("Spawn recruit");
+        g_devButton = addButton(client, 9, "TownLedgerDev", onDevClick);
+        addButton(client, 10, "TownLedgerRemoveSelected", onRemoveSelectedClick)->setCaption("Remove selected");
+        addButton(client, 11, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
 
         g_window->setVisible(false);
     }
