@@ -39,6 +39,8 @@ WANDERER_SQUAD = ("45550-gamedata.base", "startoff- Wanderer squad")
 TORCH_POST = ("5437-new_furniture_otto.mod", "Torch Post")
 SIGNS_MATERIAL = ("973-gamedata.base", "signs")
 DEFAULT_START = ("5359-gamedata.base", "_Default Start")
+THRONE_USE = ("57289-rebirth.mod", "throne chair")       # BuildingFunctionality, BF_THRONE
+BOWING = ("44934-rebirth.mod", "bowing")                  # the fogmen's worship animation
 NOTE_ITEM = None  # "Memo From Big Grim", resolved by name in town_ledger()
 
 # Must match DEED_NAME and FOUNDER_NAME in src/TownLedger.cpp.
@@ -168,8 +170,17 @@ def ankh(db, mod):
     part.set("file", "xml collision", where + "ankh.xml")  # a box; see assets/collision.py
     part.refs[b"material"] = [(kmod._b(mat.sid), 0, 100, 0)]
 
+    # Worship: a throne's "use" (sit here, play this animation) with the
+    # fogmen's bowing in place of sitting. A user goes to the building's
+    # origin and faces +Z (the vanilla Boss Chair's back is at -Z), so the
+    # mesh stands 7 units in front of its origin (export_mesh OFFSET_Z).
+    # (Created after the building: the building's id, 3-KenshiTownDev.mod,
+    # is in saves that have one placed.)
     building = mod.new(torch, "Faience Ankh")
-    building.refs = kmod.OrderedDict([(b"parts", [(kmod._b(part.sid), 0, 100, 0)])])
+    use = mod.new(base(db, THRONE_USE), "Kenshi Town ankh worship")
+    use.refs[b"animation"] = [(kmod._b(base(db, BOWING).sid), 0, 0, 0)]
+    building.refs = kmod.OrderedDict([(b"parts", [(kmod._b(part.sid), 0, 100, 0)]),
+                                      (b"functionality", [(kmod._b(use.sid), 0, 0, 0)])])
     building.set("str", "building category", "EXTERIOR")
     building.set("str", "Description", "A faience ankh, taller than a man. Kenshi Town's first custom model.")
     building.set("int", "build materials", 2)

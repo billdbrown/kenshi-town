@@ -4,13 +4,23 @@ submesh, float3 position/normal/uv/tangent at 44 bytes a vertex)."""
 import bpy, struct, os, math
 OUT = os.environ["ASSET_OUT"]
 HEIGHT = float(os.environ.get('HEIGHT', '18'))  # Kenshi units, ~10 cm each
+# Push the model this far along +Z from the origin: a building's user stands
+# at the origin facing +Z, so this leaves room in front of it to kneel.
+OFFSET_Z = float(os.environ.get('OFFSET_Z', '0'))
 
 ob = bpy.data.objects['ankh_lo']
 me = ob.data
 me.calc_tangents()
 uv = me.uv_layers.active.data
 
-def ogre(v):  # Blender Z-up -> Ogre Y-up
+# Turn the model 180 degrees so its front (Blender -Y) faces the origin,
+# where a building's user stands looking along +Z.
+FACE_ORIGIN = os.environ.get('FACE_ORIGIN', '0') == '1'
+
+
+def ogre(v):  # Blender Z-up -> Ogre Y-up (a rotation either way, so normals follow)
+    if FACE_ORIGIN:
+        return (-v[0], v[2], v[1])
     return (v[0], v[2], -v[1])
 
 pts = [ogre(v.co) for v in me.vertices]
@@ -27,7 +37,7 @@ for poly in me.polygons:
     for li in poly.loop_indices:
         l = me.loops[li]
         p = ogre(me.vertices[l.vertex_index].co)
-        p = tuple((p[i] + off[i]) * s for i in range(3))
+        p = tuple((p[i] + off[i]) * s + (OFFSET_Z if i == 2 else 0.0) for i in range(3))
         n = ogre(l.normal)
         t = ogre(l.tangent)
         u, v = uv[li].uv
@@ -46,8 +56,8 @@ geom = chunk(0x5000, struct.pack('<I', count)
              + chunk(0x5200, struct.pack('<HH', 0, 44) + chunk(0x5210, bytes(verts))))
 sub = chunk(0x4000, b'StaticObject\n' + struct.pack('<BIB', 0, count, 0) + idx
             + geom + chunk(0x4010, struct.pack('<H', 4)))
-bmin = [(lo[i] + off[i]) * s for i in range(3)]
-bmax = [(hi[i] + off[i]) * s for i in range(3)]
+bmin = [(lo[i] + off[i]) * s + (OFFSET_Z if i == 2 else 0.0) for i in range(3)]
+bmax = [(hi[i] + off[i]) * s + (OFFSET_Z if i == 2 else 0.0) for i in range(3)]
 radius = math.sqrt(sum(max(abs(bmin[i]), abs(bmax[i])) ** 2 for i in range(3)))
 bounds = chunk(0x9000, struct.pack('<7f', *bmin, *bmax, radius))
 names = chunk(0xA000, chunk(0xA100, struct.pack('<H', 0) + b'submesh0\n'))

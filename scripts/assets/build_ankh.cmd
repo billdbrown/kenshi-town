@@ -3,6 +3,8 @@ rem Pipeline test: the ankh from Documents\Blender\ankh\ankh_v2.blend into a
 rem Kenshi building. Output in build\assets\ankh; build_mods.py installs it.
 setlocal
 set BLENDER="C:\Program Files\Blender Foundation\Blender 5.3\blender.exe"
+set OFFSET_Z=7
+set FACE_ORIGIN=1
 set ASSET_OUT=%~dp0..\..\build\assets\ankh
 if not exist "%ASSET_OUT%" mkdir "%ASSET_OUT%"
 %BLENDER% -b "%USERPROFILE%\Documents\Blender\ankh\ankh_v2.blend" --python "%~dp0bake.py" || exit /b 1

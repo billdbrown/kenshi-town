@@ -3909,13 +3909,9 @@ namespace
     // hint, a bar with the count in words, and the reward and what comes next.
     // A finished task shows as complete (green, bar full, the reward) for a
     // few seconds before the next one takes its place. "-" folds it to its
-    // header line.
-    //
-    // Two looks while Bill picks, switched by the "A/B" button: A sits in a
-    // Kenshi HUD panel, B is bare shadowed text over the world. Delete the
-    // loser once he has.
+    // header line. It sits in a Kenshi HUD panel (bare text over the world
+    // was tried alongside it, 2026-11-22; Bill picked the panel).
 
-    int g_trackerStyle = 0; // 0 = A (panel), 1 = B (bare)
     bool g_trackerFolded = false;
     MyGUI::Widget* g_trkPanel = NULL;
     MyGUI::TextBox* g_trkHeader = NULL;
@@ -3925,20 +3921,12 @@ namespace
     MyGUI::TextBox* g_trkFoot = NULL;
     MyGUI::ProgressBar* g_trkBar = NULL;
     MyGUI::Button* g_trkFold = NULL;
-    MyGUI::Button* g_trkStyle = NULL;
 
     void updateTracker(bool inGame);
 
     void onTrackerFold(MyGUI::WidgetPtr)
     {
         g_trackerFolded = !g_trackerFolded;
-        updateTracker(true);
-    }
-
-    void onTrackerStyle(MyGUI::WidgetPtr)
-    {
-        g_trackerStyle = 1 - g_trackerStyle;
-        actionLog(g_trackerStyle ? "[tracker] look B: bare text" : "[tracker] look A: panel");
         updateTracker(true);
     }
 
@@ -3979,13 +3967,9 @@ namespace
             g_trkFold = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.6f, 0.1f, 0.02f, 0.02f,
                                                              MyGUI::Align::Default, "Main", "KenshiTownTrkFold");
             g_trkFold->eventMouseButtonClick += MyGUI::newDelegate(onTrackerFold);
-            g_trkStyle = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.6f, 0.1f, 0.02f, 0.02f,
-                                                              MyGUI::Align::Default, "Main", "KenshiTownTrkStyle");
-            g_trkStyle->setCaption("A/B");
-            g_trkStyle->eventMouseButtonClick += MyGUI::newDelegate(onTrackerStyle);
         }
         MyGUI::Widget* all[] = {g_trkPanel, g_trkHeader, g_trkTitle, g_trkHint, g_trkBar,
-                                g_trkCount, g_trkFoot, g_trkFold, g_trkStyle};
+                                g_trkCount, g_trkFoot, g_trkFold};
         for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); ++i)
             all[i]->setVisible(false);
         g_columnY = COL_TOP;
@@ -4002,10 +3986,6 @@ namespace
 
         const float x = COL_RIGHT - COL_W, pad = 0.008f, inner = COL_W - 2 * pad;
         float y = COL_TOP + pad;
-        bool bare = g_trackerStyle == 1;
-        MyGUI::TextBox* texts[] = {g_trkHeader, g_trkTitle, g_trkHint, g_trkCount, g_trkFoot};
-        for (size_t i = 0; i < 5; ++i)
-            texts[i]->setTextShadow(bare);
 
         std::ostringstream head;
         if (!ours)
@@ -4014,9 +3994,8 @@ namespace
             head << "GETTING STARTED   " << step + 1 << " / " << QUEST_COUNT;
         g_trkHeader->setCaption(head.str());
         g_trkHeader->setTextColour(MyGUI::Colour(0.85f, 0.78f, 0.6f));
-        place(g_trkHeader, x + pad, y, inner - 0.05f, 0.02f);
+        place(g_trkHeader, x + pad, y, inner - 0.025f, 0.02f);
         g_trkFold->setCaption(g_trackerFolded ? "+" : "-");
-        place(g_trkStyle, x + COL_W - pad - 0.047f, y, 0.026f, 0.02f);
         place(g_trkFold, x + COL_W - pad - 0.018f, y, 0.018f, 0.02f);
         y += 0.024f;
 
@@ -4079,11 +4058,8 @@ namespace
             }
         }
         y += pad;
-        if (!bare)
-        {
-            g_trkPanel->setRealCoord(x, COL_TOP, COL_W, y - COL_TOP);
-            g_trkPanel->setVisible(true);
-        }
+        g_trkPanel->setRealCoord(x, COL_TOP, COL_W, y - COL_TOP);
+        g_trkPanel->setVisible(true);
         g_columnY = y + COL_GAP;
     }
 
