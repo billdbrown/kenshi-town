@@ -86,7 +86,8 @@ namespace
     // Armed when the Hub is (re)found, i.e. after a load; see autoReapplyTick.
     bool g_reapplyPending = false;
     size_t g_reapplyLastCount = 0;
-    void onRosterClick(MyGUI::WidgetPtr); // the Town Roster, further down
+    void onRosterClick(MyGUI::WidgetPtr);     // the Town Roster, further down
+    void onArrivalNowClick(MyGUI::WidgetPtr); // arrivals, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
 
@@ -1437,6 +1438,7 @@ namespace
         addButton(client, 10, "TownLedgerRemoveSelected", onRemoveSelectedClick)->setCaption("Remove selected");
         addButton(client, 11, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
         addButton(client, 12, "TownLedgerRoster", onRosterClick)->setCaption("Roster");
+        addButton(client, 13, "TownLedgerArrivalNow", onArrivalNowClick)->setCaption("Arrival now");
 
         g_window->setVisible(false);
     }
@@ -1686,6 +1688,127 @@ namespace
         actionLog("[roster] after load:" + (done.empty() ? std::string(" nobody has a profile") : done));
     }
 
+    // ==== Arrivals ============================================================
+    //
+    // Every ARRIVAL_EVERY_HOURS of game time, one to three drifters turn up
+    // outside the Hub's gate as neutrals and wait, up to GATE_MAX at once. The
+    // Town Roster lists them; Accept recruits them as citizens with no job,
+    // Turn away leaves them be. Game hours, so a paused game brings no one.
+
+    const double ARRIVAL_EVERY_HOURS = 12.0;
+    const size_t GATE_MAX = 3;
+
+    struct Arrival
+    {
+        Character* who;
+        double hour; // in-game hour they arrived
+    };
+    std::vector<Arrival> g_gate;
+    double g_nextArrivalHour = -1; // < 0: not scheduled yet (set after a load)
+
+    double gameHours()
+    {
+        return (ou && ou->player) ? ou->getTimeStamp_inGameHours().getTotalHours() : 0.0;
+    }
+
+    // Who waiting at the gate is still there and still not ours.
+    void pruneGate()
+    {
+        std::vector<Arrival> keep;
+        const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+        for (size_t i = 0; i < g_gate.size(); ++i)
+        {
+            bool joined = false;
+            for (uint32_t j = 0; j < people.size() && !joined; ++j)
+                joined = people[j] == g_gate[i].who;
+            if (!joined && !g_gate[i].who->isDead())
+                keep.push_back(g_gate[i]);
+        }
+        g_gate.swap(keep);
+    }
+
+    Faction* arrivalFaction()
+    {
+        if (!ou || !ou->factionMgr)
+            return NULL;
+        Faction* f = ou->factionMgr->getFactionByName("Drifters");
+        return f ? f : ou->factionMgr->getEmptyFaction();
+    }
+
+    // Spawn a group at the gate. Returns how many came, for the log.
+    int spawnArrivals()
+    {
+        if (!g_hub || !g_createChar || !ou || !ou->theFactory)
+            return 0;
+        GameData* tmpl = ou->gamedata.getData(DEV_RECRUIT_SID);
+        Faction* faction = arrivalFaction();
+        if (!tmpl || !faction)
+            return 0;
+        Ogre::Vector3 gate = g_hub->getPositionOutsideTownGates(200.0f);
+        if (gate.squaredLength() < 1.0f) // no gate: the edge of town, eastwards
+        {
+            gate = g_hub->getPosition();
+            gate.x += g_hubRadius * 0.9f;
+        }
+        int want = 1 + rand() % 3;
+        int came = 0;
+        for (int i = 0; i < want && g_gate.size() < GATE_MAX; ++i)
+        {
+            Ogre::Vector3 at(gate.x + 25.0f * i, gate.y, gate.z + 15.0f * (i % 2));
+            RootObject* r = g_createChar(ou->theFactory, faction, at, NULL, tmpl, NULL, 25.0f);
+            if (!r)
+                break;
+            Arrival a;
+            a.who = static_cast<Character*>(r);
+            a.hour = gameHours();
+            g_gate.push_back(a);
+            ++came;
+        }
+        if (came)
+        {
+            std::ostringstream note;
+            note << "[arrivals] " << came << " drifter" << (came > 1 ? "s" : "") << " at the gate ("
+                 << factionName(faction) << "): open the Roster";
+            actionLog(note.str());
+        }
+        return came;
+    }
+
+    // Main-loop tick: schedule after a load, spawn when due.
+    void arrivalsTick()
+    {
+        if (!ou || !ou->player || !g_hub || !hubIsOurs())
+            return;
+        pruneGate();
+        double now = gameHours();
+        if (g_nextArrivalHour < 0 || g_nextArrivalHour > now + ARRIVAL_EVERY_HOURS * 2)
+        {
+            g_nextArrivalHour = now + ARRIVAL_EVERY_HOURS;
+            return;
+        }
+        if (now < g_nextArrivalHour)
+            return;
+        g_nextArrivalHour = now + ARRIVAL_EVERY_HOURS;
+        if (g_gate.size() < GATE_MAX)
+            spawnArrivals();
+    }
+
+    void onArrivalNowClick(MyGUI::WidgetPtr)
+    {
+        if (!g_hub)
+        {
+            actionLog("[arrivals] no Hub found");
+            return;
+        }
+        if (g_gate.size() >= GATE_MAX)
+        {
+            actionLog("[arrivals] the gate is full: accept or turn someone away first");
+            return;
+        }
+        if (!spawnArrivals())
+            actionLog("[arrivals] nobody came (spawn failed; see the log)");
+    }
+
     // ---- The window.
     //
     //   Profiles            | People: Name | Profile | Doing
@@ -1700,6 +1823,9 @@ namespace
     MyGUI::EditBox* g_rosterName = NULL;
     MyGUI::EditBox* g_rosterPick = NULL;
     MyGUI::EditBox* g_rosterStatus = NULL;
+    MyGUI::ListBox* g_rosterGate = NULL;
+    std::vector<std::string> g_rosterGateRows;
+    void refreshGate(); // with the gate handlers, below
     std::vector<Character*> g_rosterPeopleRows;
     std::vector<std::string> g_rosterProfileRows, g_rosterPeopleText;
 
@@ -1823,6 +1949,7 @@ namespace
             g_rosterPeopleRows.push_back(c);
         }
         fillTable(g_rosterPeople, g_rosterPeopleText, peopleRows);
+        refreshGate();
 
         refreshRosterPicks();
         g_rosterStatus->setCaption(g_lastAction);
@@ -1836,6 +1963,71 @@ namespace
     void onRosterPersonPicked(MyGUI::MultiListBox*, size_t)
     {
         refreshRosterPicks();
+    }
+
+    void refreshGate()
+    {
+        std::vector<std::string> rows;
+        double now = gameHours();
+        for (size_t i = 0; i < g_gate.size(); ++i)
+        {
+            std::ostringstream row;
+            row << g_gate[i].who->getName() << "  -  waiting " << int(now - g_gate[i].hour) << "h";
+            rows.push_back(row.str());
+        }
+        if (rows.empty())
+            rows.push_back("Nobody at the gate.");
+        fillList(g_rosterGate, g_rosterGateRows, rows);
+    }
+
+    Character* gateSelected(size_t* index)
+    {
+        size_t i = g_rosterGate->getIndexSelected();
+        if (i == MyGUI::ITEM_NONE || i >= g_gate.size())
+            return NULL;
+        *index = i;
+        return g_gate[i].who;
+    }
+
+    void onGateAccept(MyGUI::WidgetPtr)
+    {
+        size_t i = 0;
+        Character* c = gateSelected(&i);
+        if (!c)
+        {
+            actionLog("[arrivals] pick someone at the gate first");
+            refreshRoster();
+            return;
+        }
+        bool joined = ou->player->recruit(c, false);
+        if (!joined)
+        {
+            actionLog("[arrivals] " + c->getName() + " would not join (recruit refused)");
+            refreshRoster();
+            return;
+        }
+        g_gate.erase(g_gate.begin() + i);
+        setNameTag(c, CITIZEN_TAG);
+        g_citizens.insert(c);
+        syncSquad(c);
+        ou->player->objectSelected(c, false);
+        actionLog("[arrivals] " + bareName(c) + " joined the Hub as a citizen: give them a profile");
+        refreshRoster();
+    }
+
+    void onGateTurnAway(MyGUI::WidgetPtr)
+    {
+        size_t i = 0;
+        Character* c = gateSelected(&i);
+        if (!c)
+        {
+            actionLog("[arrivals] pick someone at the gate first");
+            refreshRoster();
+            return;
+        }
+        g_gate.erase(g_gate.begin() + i);
+        actionLog("[arrivals] turned " + c->getName() + " away");
+        refreshRoster();
     }
 
     void onRosterNewProfile(MyGUI::WidgetPtr)
@@ -1995,12 +2187,16 @@ namespace
 
         // Right column: people as a table, what Assign will do, and actions.
         g_rosterPeople = client->createWidgetReal<MyGUI::MultiListBox>(
-            "Kenshi_MultiListBox", 0.40f, 0.02f, 0.58f, 0.66f, MyGUI::Align::Default, "TownRosterPeople");
+            "Kenshi_MultiListBox", 0.40f, 0.02f, 0.58f, 0.40f, MyGUI::Align::Default, "TownRosterPeople");
         int w = g_rosterPeople->getWidth();
         g_rosterPeople->addColumn("Name", w * 30 / 100);
         g_rosterPeople->addColumn("Profile", w * 25 / 100);
         g_rosterPeople->addColumn("Doing", w * 45 / 100 - 4);
         g_rosterPeople->eventListChangePosition += MyGUI::newDelegate(onRosterPersonPicked);
+        g_rosterGate = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.40f, 0.44f, 0.58f, 0.16f,
+                                                                MyGUI::Align::Default, "TownRosterGate");
+        rosterButton(client, 0.40f, 0.61f, 0.285f, "TownRosterAccept", "Accept", onGateAccept);
+        rosterButton(client, 0.695f, 0.61f, 0.285f, "TownRosterTurnAway", "Turn away", onGateTurnAway);
         g_rosterPick = rosterText(client, 0.40f, 0.70f, 0.58f, 0.075f, "TownRosterPick");
         rosterButton(client, 0.40f, 0.785f, 0.285f, "TownRosterAssign", "Assign", onRosterAssign);
         rosterButton(client, 0.695f, 0.785f, 0.285f, "TownRosterReapply", "Reapply jobs", onRosterReapply);
@@ -2022,6 +2218,7 @@ namespace
         {
             g_rosterProfileRows.clear(); // force a refill
             g_rosterPeopleText.clear();
+            g_rosterGateRows.clear();
             refreshRoster();
         }
     }
@@ -2064,6 +2261,11 @@ namespace
         {
             g_hudLedger->setVisible(inGame);
             g_hudRoster->setVisible(inGame);
+            std::ostringstream cap;
+            cap << "Roster";
+            if (!g_gate.empty())
+                cap << " (" << g_gate.size() << " at gate)";
+            g_hudRoster->setCaption(cap.str());
         }
     }
 
@@ -2079,6 +2281,7 @@ namespace
             updateHubCache();
             rebuildCitizensFromNames();
             autoReapplyTick();
+            arrivalsTick();
             if (g_devFast)
                 applyDevSpeed();
         }
