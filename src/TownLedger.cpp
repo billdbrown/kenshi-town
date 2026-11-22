@@ -437,6 +437,73 @@ namespace
         return *reinterpret_cast<const Ogre::Vector3*>(reinterpret_cast<const char*>(t) + TaskerFields::LOCATION);
     }
 
+    // ---- Dev: money and a recruit, so the labour test doesn't wait on the
+    // early game. The player's cats live in the faction's Ownerships record;
+    // its class is in Platoon.h, which clashes with Building.h in KenshiLib
+    // 0.4.0, so the money field is read at its documented offset.
+
+    const size_t OWNERSHIPS_MONEY = 0x88; // Ownerships::money
+
+    int* factionMoney(Faction* f)
+    {
+        if (!f || !f->factionOwnerships)
+            return NULL;
+        return reinterpret_cast<int*>(reinterpret_cast<char*>(f->factionOwnerships) + OWNERSHIPS_MONEY);
+    }
+
+    const int DEV_MONEY = 5000;
+    const char* DEV_RECRUIT_SID = "2205-gamedata.base"; // Drifter
+
+    // createRandomCharacter takes Vector3 by value; exact signature for the x64
+    // ABI, as KenshiCoop declares it.
+    typedef RootObject* (__fastcall* CreateCharFn)(
+        RootObjectFactory* self, Faction* faction, Ogre::Vector3 position,
+        RootObjectContainer* owner, GameData* characterTemplate, Building* home, float age);
+    CreateCharFn g_createChar = NULL;
+
+    void onMoneyClick(MyGUI::WidgetPtr)
+    {
+        int* money = (ou && ou->player) ? factionMoney(ou->player->getFaction()) : NULL;
+        if (!money)
+        {
+            DebugLog("TownLedger: [dev money] no player faction money record");
+            return;
+        }
+        int before = *money;
+        *money += DEV_MONEY;
+        std::ostringstream note;
+        note << "dev money: " << before << " -> " << *money;
+        DebugLog("TownLedger: [" + note.str() + "]");
+    }
+
+    void onSpawnRecruitClick(MyGUI::WidgetPtr)
+    {
+        std::vector<Character*> chars;
+        selectedCharacters(chars);
+        if (chars.empty() || !g_createChar || !ou->theFactory)
+        {
+            DebugLog("TownLedger: [spawn recruit] select one of your characters first");
+            return;
+        }
+        GameData* tmpl = ou->gamedata.getData(DEV_RECRUIT_SID);
+        if (!tmpl)
+        {
+            DebugLog("TownLedger: [spawn recruit] Drifter template not found");
+            return;
+        }
+        Ogre::Vector3 at = chars[0]->getPosition();
+        Ogre::Vector3 pos(at.x - 20.0f, at.y, at.z);
+        RootObject* r = g_createChar(ou->theFactory, ou->player->getFaction(), pos, NULL, tmpl, NULL, 25.0f);
+        if (!r)
+        {
+            DebugLog("TownLedger: [spawn recruit] createRandomCharacter returned nothing");
+            return;
+        }
+        Character* c = static_cast<Character*>(r);
+        bool joined = ou->player->recruit(c, false);
+        DebugLog("TownLedger: [spawn recruit] " + c->getName() + (joined ? " joined" : " spawned, recruit refused"));
+    }
+
     std::string describeJobs(Character* c)
     {
         std::ostringstream out;
@@ -908,7 +975,7 @@ namespace
         const float width = 0.3f, gap = 0.02f;
         int col = slot % 3, row = slot / 3;
         MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>(
-            "Kenshi_Button1", 0.03f + col * (width + gap), 0.60f + row * 0.09f, width, 0.075f,
+            "Kenshi_Button1", 0.03f + col * (width + gap), 0.50f + row * 0.09f, width, 0.075f,
             MyGUI::Align::Left | MyGUI::Align::Bottom, name);
         b->eventMouseButtonClick += MyGUI::newDelegate(click);
         return b;
@@ -927,7 +994,7 @@ namespace
 
         MyGUI::Widget* client = g_window->getClientWidget();
         g_text = client->createWidgetReal<MyGUI::EditBox>(
-            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.56f,
+            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.46f,
             MyGUI::Align::Stretch, "TownLedgerText");
         g_text->setEditMultiLine(true);
         g_text->setEditReadOnly(true);
@@ -945,6 +1012,8 @@ namespace
         addButton(client, 8, "TownLedgerMakeCitizen", onMakeCitizenClick)->setCaption("Make citizen");
         addButton(client, 9, "TownLedgerAssignRole", onAssignRoleClick)->setCaption("Assign role");
         addButton(client, 10, "TownLedgerFreeCitizens", onFreeCitizensClick)->setCaption("Free citizens");
+        addButton(client, 11, "TownLedgerMoney", onMoneyClick)->setCaption("+5000 cats");
+        addButton(client, 12, "TownLedgerSpawnRecruit", onSpawnRecruitClick)->setCaption("Spawn recruit");
 
         g_window->setVisible(false);
     }
@@ -1031,6 +1100,7 @@ __declspec(dllexport) void startPlugin()
         static_cast<Item* (RootObjectFactory::*)(GameData*, const hand&, GameData*, GameData*, int, Faction*)>(
             &RootObjectFactory::createItem));
     g_createBuilding = (CreateBuildingFn)KenshiLib::GetRealAddress(&RootObjectFactory::createBuilding);
+    g_createChar = (CreateCharFn)KenshiLib::GetRealAddress(&RootObjectFactory::createRandomCharacter);
 
     DebugLog("TownLedger: ready, press F8 in game");
 }
