@@ -1865,6 +1865,42 @@ namespace
         toggleRoster();
     }
 
+    // ---- HUD buttons: Ledger and Roster, always on screen while a game is
+    // loaded. Right edge, a third of the way down, clear of Kenshi's own bars.
+
+    MyGUI::Button* g_hudLedger = NULL;
+    MyGUI::Button* g_hudRoster = NULL;
+
+    void onHudLedgerClick(MyGUI::WidgetPtr)
+    {
+        toggle();
+    }
+
+    MyGUI::Button* hudButton(float y, const char* name, const char* caption, void (*click)(MyGUI::WidgetPtr))
+    {
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        MyGUI::Button* b = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.925f, y, 0.07f, 0.035f,
+                                                                MyGUI::Align::Default, "Main", name);
+        b->setCaption(caption);
+        b->eventMouseButtonClick += MyGUI::newDelegate(click);
+        return b;
+    }
+
+    void updateHud()
+    {
+        bool inGame = ou && ou->player && ou->player->getAllPlayerCharacters().size() > 0;
+        if (!g_hudLedger && inGame && MyGUI::Gui::getInstancePtr())
+        {
+            g_hudLedger = hudButton(0.30f, "TownLedgerHudLedger", "Ledger (F8)", onHudLedgerClick);
+            g_hudRoster = hudButton(0.34f, "TownLedgerHudRoster", "Roster (F9)", onRosterClick);
+        }
+        if (g_hudLedger)
+        {
+            g_hudLedger->setVisible(inGame);
+            g_hudRoster->setVisible(inGame);
+        }
+    }
+
     void (*mainLoop_orig)(GameWorld*, float) = NULL;
 
     void mainLoop_hook(GameWorld* thisptr, float time)
@@ -1903,7 +1939,10 @@ namespace
             toggleRoster();
         g_rosterKeyWasDown = rosterDown;
         if (g_frame % REFRESH_EVERY_N_FRAMES == 0)
+        {
             refreshRoster();
+            updateHud();
+        }
 
         if (g_window && g_window->getVisible() && g_frame % REFRESH_EVERY_N_FRAMES == 0)
             refresh();
