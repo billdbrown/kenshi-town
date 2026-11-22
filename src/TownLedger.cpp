@@ -2576,7 +2576,7 @@ namespace
     // contracts and the Engineer's "storage is full" rule will read from.
 
     MyGUI::Window* g_town = NULL;
-    MyGUI::EditBox* g_townSummary = NULL;
+    MyGUI::EditBox* g_townSummary[3] = {NULL, NULL, NULL};
     MyGUI::MultiListBox* g_townStock = NULL;
     std::vector<std::string> g_townStockRows;
 
@@ -2663,7 +2663,17 @@ namespace
         }
         sum << "\nStorage: " << containers << " containers, " << stock.size() << " kinds of item"
             << "    At the gate: " << g_gate.size() << "\n" << contractLine();
-        g_townSummary->setCaption(sum.str());
+        // One box per line: a multi-line caption showed only its first line.
+        std::string all = sum.str();
+        size_t start = 0;
+        for (int line = 0; line < 3; ++line)
+        {
+            size_t nl = all.find('\n', start);
+            g_townSummary[line]->setCaption(start == std::string::npos ? std::string()
+                                            : all.substr(start, nl == std::string::npos ? std::string::npos
+                                                                                       : nl - start));
+            start = nl == std::string::npos ? std::string::npos : nl + 1;
+        }
 
         // Stock table, biggest first.
         std::vector<std::pair<int, std::string> > order;
@@ -2686,7 +2696,12 @@ namespace
 
     void createTownContent(MyGUI::Widget* client)
     {
-        g_townSummary = rosterText(client, 0.02f, 0.02f, 0.96f, 0.19f, "TownAdminSummary");
+        for (int line = 0; line < 3; ++line)
+        {
+            std::ostringstream name;
+            name << "TownAdminSummary" << line;
+            g_townSummary[line] = rosterText(client, 0.02f, 0.02f + line * 0.065f, 0.96f, 0.06f, name.str().c_str());
+        }
         rosterButton(client, 0.02f, 0.22f, 0.30f, "TownAdminPay", "Pay garrison a week", onGarrisonPay);
         rosterButton(client, 0.33f, 0.22f, 0.20f, "TownAdminDismiss", "Dismiss", onGarrisonDismiss);
         g_townStock = client->createWidgetReal<MyGUI::MultiListBox>(
@@ -2872,6 +2887,8 @@ namespace
         g_main->eventWindowButtonPressed += MyGUI::newDelegate(onWindowButton);
         g_tabs = g_main->getClientWidget()->createWidgetReal<MyGUI::TabControl>(
             "Kenshi_TabControl", 0.0f, 0.0f, 1.0f, 1.0f, MyGUI::Align::Stretch, "KenshiTownTabs");
+        g_tabs->setButtonAutoWidth(false);
+        g_tabs->setButtonDefaultWidth(140);
         createTownContent(g_tabs->addItem("Town"));
         createRosterContent(g_tabs->addItem("Roster"));
         createBuildingsContent(g_tabs->addItem("Buildings"));
@@ -2926,7 +2943,7 @@ namespace
 
     // Bottom of the screen with Kenshi's own HUD. Position is a guess at a gap
     // in the bottom bar; adjust HUD_X / HUD_Y if it sits on something.
-    const float HUD_X = 0.81f, HUD_Y = 0.955f, HUD_W = 0.085f, HUD_H = 0.035f;
+    const float HUD_X = 0.851f, HUD_Y = 0.712f, HUD_W = 0.10f, HUD_H = 0.035f; // above Money / Day
 
     MyGUI::Button* hudButton(float y, const char* name, const char* caption, void (*click)(MyGUI::WidgetPtr))
     {
