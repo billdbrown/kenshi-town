@@ -52,6 +52,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -375,29 +376,80 @@ namespace
         out << "\n";
     }
 
-    std::string buildingOwners()
+    // ---- The Hub's buildings.
+
+    void hubBuildings(std::vector<Building*>& out)
     {
+        out.clear();
+        if (!g_hub)
+            return;
         TownBuildingsManager* mgr = g_hub->getBuildingsManager();
         if (!mgr)
-            return "  (no buildings manager)\n";
-
-        std::map<std::string, int> byOwner;
-        int total = 0;
+            return;
         for (ogre_unordered_map<Building*, TownBuildingsManager::BuildingInfo>::type::iterator it =
                  mgr->buildingEntities.begin();
              it != mgr->buildingEntities.end(); ++it)
+            if (it->first)
+                out.push_back(it->first);
+    }
+
+    // Who owned each building before we claimed it, so Give back can undo it.
+    std::map<Building*, Faction*> g_originalOwners;
+
+    // Buildings that keep their owner when we claim the Hub: the bar's trader
+    // stays by design; the Shinobi go, but through the data mod, not here.
+    bool keepsOwnerOnClaim(Building* b)
+    {
+        std::string owner = factionName(b->getFaction());
+        return owner == "Trade Ninjas" || owner == "Shinobi Thieves";
+    }
+
+    std::string buildingOwners()
+    {
+        std::vector<Building*> all;
+        hubBuildings(all);
+        std::map<std::string, int> byOwner;
+        int destroyed = 0, broken = 0, dismantlable = 0;
+        for (size_t i = 0; i < all.size(); ++i)
         {
-            Building* b = it->first;
-            if (!b)
-                continue;
+            Building* b = all[i];
             ++byOwner[factionName(b->getFaction())];
-            ++total;
+            if (b->isDestroyed())
+                ++destroyed;
+            if (b->isBroken())
+                ++broken;
+            if (b->canDismantle())
+                ++dismantlable;
         }
         std::ostringstream out;
-        out << "  " << total << " buildings:";
+        out << "  " << all.size() << " buildings:";
         for (std::map<std::string, int>::iterator it = byOwner.begin(); it != byOwner.end(); ++it)
             out << " " << it->first << " " << it->second << ";";
-        out << "\n";
+        out << "\n  destroyed " << destroyed << ", broken " << broken
+            << ", dismantlable " << dismantlable << "\n";
+        return out.str();
+    }
+
+    // One line per building, for the log only (too long for the window).
+    std::string buildingCensus()
+    {
+        std::vector<Building*> all;
+        hubBuildings(all);
+        std::map<std::string, int> lines;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            Building* b = all[i];
+            std::ostringstream key;
+            key << b->getName() << " | " << factionName(b->getFaction())
+                << (b->isDestroyed() ? " | DESTROYED" : "")
+                << (b->isBroken() ? " | broken" : "")
+                << (b->canDismantle() ? " | can dismantle" : "");
+            ++lines[key.str()];
+        }
+        std::ostringstream out;
+        out << "Hub building census (" << all.size() << "):\n";
+        for (std::map<std::string, int>::iterator it = lines.begin(); it != lines.end(); ++it)
+            out << "  " << it->second << " x " << it->first << "\n";
         return out.str();
     }
 
@@ -487,6 +539,8 @@ namespace
     {
         refresh();
         logReport("snapshot");
+        if (g_hub)
+            DebugLog("TownLedger: " + buildingCensus());
     }
 
     void onOreClick(MyGUI::WidgetPtr)
@@ -501,11 +555,64 @@ namespace
         if (!g_hub || !ou || !ou->player)
             return;
         bool ours = hubIsOurs();
-        Faction* to = ours ? g_hubOriginalFaction : ou->player->getFaction();
+        Faction* mine = ou->player->getFaction();
+        Faction* to = ours ? g_hubOriginalFaction : mine;
         DebugLog("TownLedger: setFaction " + factionName(g_hub->getFaction()) + " -> " + factionName(to));
         g_hub->setFaction(to, NULL);
+
+        // The town's own faction doesn't move its buildings; hand them over
+        // one by one (and back again).
+        std::vector<Building*> all;
+        hubBuildings(all);
+        int moved = 0;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            Building* b = all[i];
+            if (!ours)
+            {
+                if (keepsOwnerOnClaim(b) || b->getFaction() == mine)
+                    continue;
+                g_originalOwners[b] = b->getFaction();
+                b->setFaction(mine, NULL);
+                ++moved;
+            }
+            else
+            {
+                std::map<Building*, Faction*>::iterator it = g_originalOwners.find(b);
+                if (it == g_originalOwners.end())
+                    continue;
+                b->setFaction(it->second, NULL);
+                ++moved;
+            }
+        }
+        if (ours)
+            g_originalOwners.clear();
+        std::ostringstream note;
+        note << (ours ? "gave Hub back, " : "claimed Hub, ") << moved << " buildings moved";
         refresh();
-        logReport(ours ? "gave Hub back" : "claimed Hub");
+        logReport(note.str());
+    }
+
+    // Remove every destroyed building in the Hub, through the same queue the
+    // game uses for dynamic building removal. Not undoable: test on a spare save.
+    void onClearRuinsClick(MyGUI::WidgetPtr)
+    {
+        if (!ou || !g_hub)
+            return;
+        std::vector<Building*> all;
+        hubBuildings(all);
+        int removed = 0;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            if (!all[i]->isDestroyed())
+                continue;
+            ou->dynamicDestroyBuilding(hand(all[i]));
+            ++removed;
+        }
+        std::ostringstream note;
+        note << "cleared ruins, " << removed << " destroyed buildings queued for removal";
+        refresh();
+        logReport(note.str());
     }
 
     void onDevClick(MyGUI::WidgetPtr)
@@ -526,11 +633,13 @@ namespace
         refresh();
     }
 
+    // Buttons sit in two rows of three under the text.
     MyGUI::Button* addButton(MyGUI::Widget* client, int slot, const char* name, void (*click)(MyGUI::WidgetPtr))
     {
-        const float width = 0.176f, gap = 0.015f;
+        const float width = 0.3f, gap = 0.02f;
+        int col = slot % 3, row = slot / 3;
         MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>(
-            "Kenshi_Button1", 0.03f + slot * (width + gap), 0.89f, width, 0.08f,
+            "Kenshi_Button1", 0.03f + col * (width + gap), 0.81f + row * 0.09f, width, 0.075f,
             MyGUI::Align::Left | MyGUI::Align::Bottom, name);
         b->eventMouseButtonClick += MyGUI::newDelegate(click);
         return b;
@@ -549,7 +658,7 @@ namespace
 
         MyGUI::Widget* client = g_window->getClientWidget();
         g_text = client->createWidgetReal<MyGUI::EditBox>(
-            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.85f,
+            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.77f,
             MyGUI::Align::Stretch, "TownLedgerText");
         g_text->setEditMultiLine(true);
         g_text->setEditReadOnly(true);
@@ -561,6 +670,7 @@ namespace
         g_claimButton = addButton(client, 2, "TownLedgerClaim", onClaimClick);
         g_devButton = addButton(client, 3, "TownLedgerDev", onDevClick);
         addButton(client, 4, "TownLedgerSupplies", onSuppliesClick)->setCaption("Supplies");
+        addButton(client, 5, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ruins");
 
         g_window->setVisible(false);
     }
