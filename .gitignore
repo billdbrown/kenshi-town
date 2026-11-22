@@ -3,3 +3,4 @@ third_party/KenshiLib_deps/
 third_party/KenshiLib_Examples/
 *.user
 .vs/
+__pycache__/

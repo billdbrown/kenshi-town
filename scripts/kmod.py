@@ -452,7 +452,8 @@ def override(base):
 
 def clone(base, sid, name):
     """A new record copying `base`'s values and references (not instances)."""
-    rec = Record(base.type, 0, name, sid, CHANGE_NEW)
+    # 0x10 = save count 1, new: what FCS writes for a fresh record.
+    rec = Record(base.type, 0, name, sid, 0x10 | CHANGE_NEW)
     for kind in VALUE_KINDS:
         rec.values[kind].update(base.values[kind])
     for cat, refs in base.refs.items():

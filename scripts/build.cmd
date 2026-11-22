@@ -50,6 +50,10 @@ if /i "%~1"=="install" (
     xcopy /y /i "%REPO%\mod\TownLedger" "%KENSHI_DIR%\mods\TownLedger" >nul
     copy /y "%REPO%\build\TownLedger.dll" "%KENSHI_DIR%\mods\TownLedger\TownLedger.dll" >nul
     echo Installed to "%KENSHI_DIR%\mods\TownLedger"
+    REM The data mods, TownLedger.mod among them, are generated from the
+    REM vanilla data rather than kept in the repo.
+    python -I "%REPO%\scripts\build_mods.py" install
+    if errorlevel 1 exit /b 1
 )
 
 endlocal
