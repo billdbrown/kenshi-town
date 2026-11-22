@@ -2679,7 +2679,8 @@ namespace
     // ---- The deed. The Kenshi Town start gives the founder a "Deed to the
     // Hub" (TownLedger.mod); in a game where the Hub was never claimed, the
     // plugin claims it for whoever holds the deed.
-    const char* DEED_NAME = "Deed to the Hub"; // matches scripts/build_mods.py
+    const char* DEED_NAME = "Deed to the Hub";        // match scripts/build_mods.py
+    const char* FOUNDER_NAME = "Kenshi Town founder"; // the start's leader template
 
     bool playerHoldsDeed()
     {
@@ -2688,6 +2689,11 @@ namespace
         const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
         for (uint32_t i = 0; i < people.size(); ++i)
         {
+            // The Kenshi Town start's founder counts as holding the deed, in
+            // case the item itself didn't make it into their pockets.
+            GameData* tmpl = people[i] ? people[i]->getGameData() : NULL;
+            if (tmpl && tmpl->name == FOUNDER_NAME)
+                return true;
             Inventory* inv = people[i] ? people[i]->getInventory() : NULL;
             if (!inv)
                 continue;

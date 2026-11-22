@@ -36,8 +36,9 @@ THIEVES_GUILD = ("51709-rebirth.mod", "Thieves Guild")
 WANDERER_SQUAD = ("45550-gamedata.base", "startoff- Wanderer squad")
 NOTE_ITEM = None  # "Memo From Big Grim", resolved by name in town_ledger()
 
-# Must match DEED_NAME in src/TownLedger.cpp.
+# Must match DEED_NAME and FOUNDER_NAME in src/TownLedger.cpp.
 DEED_NAME = "Deed to the Hub"
+FOUNDER_NAME = "Kenshi Town founder"
 
 
 def base(db, sid_and_name):
@@ -89,8 +90,17 @@ def town_ledger(db):
              "the ruins and the trouble are yours now. The Outlaws who guard the place have agreed to "
              "stay on for ten days.")
 
-    founder = mod.new(base(db, WANDERER_SQUAD), "startoff- Kenshi Town founder")
-    founder.add_ref("special items", deed.sid, 1, 0, 0)
+    # Player starts don't hand out a squad's "special items" (tried 2026-11-22:
+    # no deed). Starting items come from the leader's own inventory list, as
+    # (item, count, chance %, 0), so the founder is a character of our own.
+    # The plugin also recognises the founder by this name (FOUNDER_NAME).
+    wanderer_squad = base(db, WANDERER_SQUAD)
+    leader_sid = wanderer_squad.refs[b"leader"][0][0]
+    founder_char = mod.new(db[leader_sid], FOUNDER_NAME)
+    founder_char.refs[b"inventory"] = [(kmod._b(deed.sid), 1, 100, 0)]
+
+    founder = mod.new(wanderer_squad, "startoff- Kenshi Town founder")
+    founder.refs[b"leader"] = [(kmod._b(founder_char.sid), 1, 0, 0)]
 
     start = mod.new(base(db, WANDERER_START), "Kenshi Town: The Hub")
     start.set("str", "description",
