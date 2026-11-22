@@ -7,6 +7,9 @@
 //   2. Claim: does TownBase::setFaction hand the Hub's buildings to the player?
 //   3. Build: can the player place buildings inside the Hub once it is theirs?
 //
+// Plus a development switch, "Dev: fast", that multiplies research and
+// construction speed so testing doesn't wait on the game's pacing.
+//
 // Everything the experiment learns is written to RE_Kenshi_log.txt, prefixed
 // "TownLedger:", so a play session can be read back afterwards.
 
@@ -21,6 +24,7 @@
 #include <kenshi/SharedKing.h>
 #include <kenshi/ZoneManager.h>
 #include <kenshi/Enums.h>
+#include <kenshi/GlobalConstants.h>
 #include <kenshi/Building/Building.h>
 // KenshiLib 0.4.0 bug: AI.h forward-declares `class CharacterMessage` while
 // Character.h defines it as an enum. Rename AI.h's copy for the include. Only
@@ -61,7 +65,7 @@ namespace
     MyGUI::EditBox* g_text = NULL;
     MyGUI::Button* g_oreButton = NULL;
     MyGUI::Button* g_claimButton = NULL;
-    MyGUI::Button* g_placeButton = NULL;
+    MyGUI::Button* g_devButton = NULL;
     bool g_keyWasDown = false;
     int g_frame = 0;
 
@@ -186,8 +190,8 @@ namespace
         return getResourceBase_orig(self, r, biome, p);
     }
 
-    // ---- Question 3: building. Watch the game's own placement verdicts, and
-    // optionally force them inside the Hub if ownership alone isn't enough.
+    // ---- Question 3: building. Watch the game's own placement verdicts.
+    // Read-only: the first test showed normal placement rules apply in the Hub.
 
     long g_placeChecks = 0;
     long g_placeHubChecks = 0;
@@ -196,7 +200,6 @@ namespace
     bool g_lastPlaceResult = false;
     bool g_lastPlaceInHub = false;
     bool g_lastProspect = false;
-    bool g_forcePlacement = false;
 
     bool (*placementVerification_orig)(PreviewBuilding*) = NULL;
 
@@ -210,12 +213,49 @@ namespace
             ++g_placeHubChecks;
             if (!ok)
                 ++g_placeHubRefused;
-            if (!ok && g_forcePlacement)
-                ok = true;
         }
         g_lastPlaceResult = ok;
         g_lastPlaceInHub = inHub;
         return ok;
+    }
+
+    // ---- Dev speed. Multiplies two global constants. They aren't saved, and
+    // the game may reload them (on load, for instance), so while the switch is
+    // on the main loop re-asserts them, treating any foreign value as the new
+    // base.
+
+    const float DEV_RESEARCH_MULT = 100.0f;
+    const float DEV_BUILD_MULT = 20.0f;
+
+    bool g_devFast = false;
+    float g_baseResearch = 0, g_baseBuild = 0;
+    float g_setResearch = 0, g_setBuild = 0;
+
+    void applyDevSpeed()
+    {
+        if (!con)
+            return;
+        if (con->RESEARCH_RATE != g_setResearch)
+        {
+            g_baseResearch = con->RESEARCH_RATE;
+            g_setResearch = con->RESEARCH_RATE = g_baseResearch * DEV_RESEARCH_MULT;
+        }
+        if (con->BUILD_SPEED_MULTIPLIER != g_setBuild)
+        {
+            g_baseBuild = con->BUILD_SPEED_MULTIPLIER;
+            g_setBuild = con->BUILD_SPEED_MULTIPLIER = g_baseBuild * DEV_BUILD_MULT;
+        }
+    }
+
+    void restoreDevSpeed()
+    {
+        if (!con)
+            return;
+        if (con->RESEARCH_RATE == g_setResearch)
+            con->RESEARCH_RATE = g_baseResearch;
+        if (con->BUILD_SPEED_MULTIPLIER == g_setBuild)
+            con->BUILD_SPEED_MULTIPLIER = g_baseBuild;
+        g_setResearch = g_setBuild = 0;
     }
 
     bool (*checkProspecting_orig)(PreviewBuilding*) = NULL;
@@ -305,7 +345,7 @@ namespace
         writeOreLine(out, "copper", COPPER);
         out << "  base map reads: " << g_baseCalls << "\n";
 
-        out << "\n3. Placement, force " << (g_forcePlacement ? "ON" : "off") << "\n";
+        out << "\n3. Placement\n";
         out << "  checks " << g_placeChecks << ", in Hub " << g_placeHubChecks
             << ", refused in Hub " << g_placeHubRefused << "\n";
         if (g_placeChecks)
@@ -314,6 +354,12 @@ namespace
         out << "  prospecting checks " << g_prospectChecks;
         if (g_prospectChecks)
             out << ", last " << (g_lastProspect ? "ok" : "zero");
+        out << "\n";
+
+        out << "\nDev: fast " << (g_devFast ? "ON" : "off");
+        if (con)
+            out << "  (research rate " << con->RESEARCH_RATE
+                << ", build speed " << con->BUILD_SPEED_MULTIPLIER << ")";
         out << "\n";
         return out.str();
     }
@@ -353,8 +399,8 @@ namespace
             g_text->setCaption(buildLedger());
         if (g_oreButton)
             g_oreButton->setCaption(g_oreOverride ? "Ore: ON" : "Ore: off");
-        if (g_placeButton)
-            g_placeButton->setCaption(g_forcePlacement ? "Force: ON" : "Force: off");
+        if (g_devButton)
+            g_devButton->setCaption(g_devFast ? "Dev: FAST" : "Dev: off");
         if (g_claimButton)
             g_claimButton->setCaption(hubIsOurs() ? "Give back" : "Claim Hub");
     }
@@ -386,11 +432,15 @@ namespace
         logReport(ours ? "gave Hub back" : "claimed Hub");
     }
 
-    void onForceClick(MyGUI::WidgetPtr)
+    void onDevClick(MyGUI::WidgetPtr)
     {
-        g_forcePlacement = !g_forcePlacement;
+        g_devFast = !g_devFast;
+        if (g_devFast)
+            applyDevSpeed();
+        else
+            restoreDevSpeed();
         refresh();
-        logReport(g_forcePlacement ? "force placement on" : "force placement off");
+        logReport(g_devFast ? "dev fast on" : "dev fast off");
     }
 
     MyGUI::Button* addButton(MyGUI::Widget* client, int slot, const char* name, void (*click)(MyGUI::WidgetPtr))
@@ -426,7 +476,7 @@ namespace
         addButton(client, 0, "TownLedgerLog", onLogClick)->setCaption("Log it");
         g_oreButton = addButton(client, 1, "TownLedgerOre", onOreClick);
         g_claimButton = addButton(client, 2, "TownLedgerClaim", onClaimClick);
-        g_placeButton = addButton(client, 3, "TownLedgerForce", onForceClick);
+        g_devButton = addButton(client, 3, "TownLedgerDev", onDevClick);
 
         g_window->setVisible(false);
     }
@@ -451,7 +501,11 @@ namespace
 
         ++g_frame;
         if (g_frame % FIND_HUB_EVERY_N_FRAMES == 1)
+        {
             updateHubCache();
+            if (g_devFast)
+                applyDevSpeed();
+        }
 
         // Once, after the first in-Hub ore reading, log the scale we got.
         if (!g_loggedScale && (g_ore[STONE].hubCalls || g_ore[IRON].hubCalls || g_ore[COPPER].hubCalls))
