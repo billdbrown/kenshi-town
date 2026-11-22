@@ -11,6 +11,8 @@ Two mods:
   KenshiTownDev  development only, never shipped:
                    - every research free, instant, at the first bench tier,
                      and with no prerequisites
+                   - "Faience Ankh", a custom-model building (asset pipeline
+                     test; scripts/assets/build_ankh.cmd makes its files)
 
 Every base record is looked up by stringId and checked by name, so a typo or a
 game update that moves a record fails the build instead of shipping a mod that
@@ -34,6 +36,9 @@ WANDERER_START = ("1980-gamedata.base", "Wanderer")
 THE_HUB = ("18919-Newwworld.mod", "The Hub")
 THIEVES_GUILD = ("51709-rebirth.mod", "Thieves Guild")
 WANDERER_SQUAD = ("45550-gamedata.base", "startoff- Wanderer squad")
+TORCH_POST = ("5437-new_furniture_otto.mod", "Torch Post")
+SIGNS_MATERIAL = ("973-gamedata.base", "signs")
+DEFAULT_START = ("5359-gamedata.base", "_Default Start")
 NOTE_ITEM = None  # "Memo From Big Grim", resolved by name in town_ledger()
 
 # Must match DEED_NAME and FOUNDER_NAME in src/TownLedger.cpp.
@@ -134,7 +139,44 @@ def dev(db):
         count += 1
     if count < 100:
         raise SystemExit("only %d research records found; expected ~185" % count)
+    ankh(db, mod)
     return mod
+
+
+ANKH_DIR = os.path.join(REPO, "build", "assets", "ankh")
+ANKH_FILES = ["ankh.mesh", "ankh.dds", "ankh_n.dds"]
+
+
+def ankh(db, mod):
+    """A custom model as a placeable building: proves the asset pipeline.
+
+    A Building's look is a list of BuildingParts; each part is a mesh (Ogre
+    .mesh, whose submesh material is just "StaticObject") plus a MaterialSpec
+    naming the textures. Built on the Torch Post (a plain exterior prop on
+    the default build list), without its light and without collision.
+    """
+    where = ".\mods\%s\\" % mod.name
+    mat = mod.new(base(db, SIGNS_MATERIAL), "Kenshi Town ankh")
+    mat.set("file", "texture map", where + "ankh.dds")
+    mat.set("file", "normal map", where + "ankh_n.dds")
+    mat.set("float", "specular mult", 0.3)
+
+    torch = base(db, TORCH_POST)
+    part = mod.new(db[torch.refs[b"parts"][0][0]], "Kenshi Town ankh part")
+    part.set("file", "phs or mesh", where + "ankh.mesh")
+    part.set("file", "xml collision", "")
+    part.refs[b"material"] = [(kmod._b(mat.sid), 0, 100, 0)]
+
+    building = mod.new(torch, "Faience Ankh")
+    building.refs = kmod.OrderedDict([(b"parts", [(kmod._b(part.sid), 0, 100, 0)])])
+    building.set("str", "building category", "EXTERIOR")
+    building.set("str", "Description", "A faience ankh, taller than a man. Kenshi Town's first custom model.")
+    building.set("int", "build materials", 2)
+
+    # The research loop above already overrides _Default Start; one record per id.
+    start = [r for r in mod.file.records if r.sid == kmod._b(DEFAULT_START[0])]
+    start = start[0] if start else mod.override(base(db, DEFAULT_START))
+    start.add_ref("enable buildings", building.sid)
 
 
 def install(path):
@@ -143,6 +185,12 @@ def install(path):
     if not os.path.isdir(dest):
         os.makedirs(dest)
     shutil.copy2(path, os.path.join(dest, name + ".mod"))
+    if name == "KenshiTownDev":
+        for f in ANKH_FILES:
+            src = os.path.join(ANKH_DIR, f)
+            if not os.path.isfile(src):
+                raise SystemExit("%s missing: run scripts\assets\build_ankh.cmd first" % src)
+            shutil.copy2(src, os.path.join(dest, f))
     print("installed  %s" % os.path.normpath(dest))
 
 
