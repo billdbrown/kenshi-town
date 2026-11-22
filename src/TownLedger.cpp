@@ -25,6 +25,10 @@
 #include <kenshi/ZoneManager.h>
 #include <kenshi/Enums.h>
 #include <kenshi/GlobalConstants.h>
+#include <kenshi/RootObjectFactory.h>
+#include <kenshi/GameDataManager.h>
+#include <kenshi/Item.h>
+#include <kenshi/util/hand.h>
 #include <kenshi/Building/Building.h>
 // KenshiLib 0.4.0 bug: AI.h forward-declares `class CharacterMessage` while
 // Character.h defines it as an enum. Rename AI.h's copy for the include. Only
@@ -268,6 +272,78 @@ namespace
         return ok;
     }
 
+    // ---- Dev supplies: research ingredients and building stock, given to the
+    // first selected character (overflow drops at their feet). Names are the
+    // game's own item names, read out of gamedata.base / rebirth.mod.
+
+    struct Supply
+    {
+        const char* name;
+        int count;
+    };
+    const Supply DEV_SUPPLIES[] = {
+        {"Book", 60},
+        {"Ancient Science Book", 15},
+        {"Engineering Research", 15},
+        {"AI Core", 8},
+        {"Building Materials", 60},
+        {"Iron Plates", 30},
+        {"Copper Alloy Plates", 20},
+        {"Steel Bars", 15},
+        {"Electrical Components", 15},
+        {"Fabrics", 15},
+    };
+
+    // createItem is overloaded; resolve the six-argument form explicitly, the
+    // way KenshiCoop does. `const hand&` is passed as a pointer.
+    typedef Item* (__fastcall* CreateItemFn)(RootObjectFactory*, GameData*, const hand*, GameData*,
+                                            GameData*, int, Faction*);
+    CreateItemFn g_createItem = NULL;
+
+    GameData* findItemData(const std::string& name)
+    {
+        const itemType kinds[] = {ITEM, ARTIFACTS, MAP_ITEM};
+        for (int i = 0; i < 3; ++i)
+            if (GameData* d = ou->gamedata.getDataByName(name, kinds[i]))
+                return d;
+        return NULL;
+    }
+
+    std::string giveDevSupplies()
+    {
+        if (!ou || !ou->player || !ou->theFactory || !g_createItem)
+            return "no game loaded";
+        lektor<RootObject*> selected;
+        ou->player->getAllSelectedObjects(selected, CHARACTER);
+        if (selected.size() == 0 || !selected[0])
+            return "select a character first";
+        RootObject* who = selected[0];
+
+        std::ostringstream out;
+        out << "gave " << who->getName() << ":";
+        for (size_t s = 0; s < sizeof(DEV_SUPPLIES) / sizeof(DEV_SUPPLIES[0]); ++s)
+        {
+            GameData* d = findItemData(DEV_SUPPLIES[s].name);
+            if (!d)
+            {
+                out << " [" << DEV_SUPPLIES[s].name << " not found]";
+                continue;
+            }
+            int given = 0;
+            for (int n = 0; n < DEV_SUPPLIES[s].count; ++n)
+            {
+                hand none;
+                Item* it = g_createItem(ou->theFactory, d, &none, NULL, NULL, -1, NULL);
+                if (!it)
+                    break;
+                who->giveItem(it, true, false);
+                ++given;
+            }
+            out << " " << DEV_SUPPLIES[s].name << " x" << given << ";";
+        }
+        return out.str();
+    }
+
     // ---- The ledger text.
 
     bool kenshiHasFocus()
@@ -443,9 +519,16 @@ namespace
         logReport(g_devFast ? "dev fast on" : "dev fast off");
     }
 
+    void onSuppliesClick(MyGUI::WidgetPtr)
+    {
+        std::string result = giveDevSupplies();
+        DebugLog("TownLedger: [dev supplies] " + result);
+        refresh();
+    }
+
     MyGUI::Button* addButton(MyGUI::Widget* client, int slot, const char* name, void (*click)(MyGUI::WidgetPtr))
     {
-        const float width = 0.225f, gap = 0.02f;
+        const float width = 0.176f, gap = 0.015f;
         MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>(
             "Kenshi_Button1", 0.03f + slot * (width + gap), 0.89f, width, 0.08f,
             MyGUI::Align::Left | MyGUI::Align::Bottom, name);
@@ -477,6 +560,7 @@ namespace
         g_oreButton = addButton(client, 1, "TownLedgerOre", onOreClick);
         g_claimButton = addButton(client, 2, "TownLedgerClaim", onClaimClick);
         g_devButton = addButton(client, 3, "TownLedgerDev", onDevClick);
+        addButton(client, 4, "TownLedgerSupplies", onSuppliesClick)->setCaption("Supplies");
 
         g_window->setVisible(false);
     }
@@ -553,6 +637,10 @@ __declspec(dllexport) void startPlugin()
             placementVerification_hook, &placementVerification_orig);
     tryHook("checkProspectingIsNotZero", KenshiLib::GetRealAddress(&PreviewBuilding::_NV_checkProspectingIsNotZero),
             checkProspecting_hook, &checkProspecting_orig);
+
+    g_createItem = (CreateItemFn)KenshiLib::GetRealAddress(
+        static_cast<Item* (RootObjectFactory::*)(GameData*, const hand&, GameData*, GameData*, int, Faction*)>(
+            &RootObjectFactory::createItem));
 
     DebugLog("TownLedger: ready, press F8 in game");
 }
