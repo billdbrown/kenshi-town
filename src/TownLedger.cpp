@@ -65,6 +65,16 @@ namespace TaskerFields
 
 namespace
 {
+    // The last thing a button did, shown at the top of the ledger as well as
+    // logged: results were only in the log, so buttons looked dead.
+    std::string g_lastAction;
+
+    void actionLog(const std::string& line)
+    {
+        g_lastAction = line;
+        DebugLog("TownLedger: " + line);
+    }
+
     const int TOGGLE_KEY = VK_F8;
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
@@ -761,14 +771,14 @@ namespace
         int* money = (ou && ou->player) ? factionMoney(ou->player->getFaction()) : NULL;
         if (!money)
         {
-            DebugLog("TownLedger: [dev money] no player faction money record");
+            actionLog("[dev money] no player faction money record");
             return;
         }
         int before = *money;
         *money += DEV_MONEY;
         std::ostringstream note;
         note << "dev money: " << before << " -> " << *money;
-        DebugLog("TownLedger: [" + note.str() + "]");
+        actionLog("[" + note.str() + "]");
     }
 
     void onSpawnRecruitClick(MyGUI::WidgetPtr)
@@ -777,13 +787,13 @@ namespace
         selectedCharacters(chars);
         if (chars.empty() || !g_createChar || !ou->theFactory)
         {
-            DebugLog("TownLedger: [spawn recruit] select one of your characters first");
+            actionLog("[spawn recruit] select one of your characters first");
             return;
         }
         GameData* tmpl = ou->gamedata.getData(DEV_RECRUIT_SID);
         if (!tmpl)
         {
-            DebugLog("TownLedger: [spawn recruit] Drifter template not found");
+            actionLog("[spawn recruit] Drifter template not found");
             return;
         }
         Ogre::Vector3 at = chars[0]->getPosition();
@@ -791,12 +801,12 @@ namespace
         RootObject* r = g_createChar(ou->theFactory, ou->player->getFaction(), pos, NULL, tmpl, NULL, 25.0f);
         if (!r)
         {
-            DebugLog("TownLedger: [spawn recruit] createRandomCharacter returned nothing");
+            actionLog("[spawn recruit] createRandomCharacter returned nothing");
             return;
         }
         Character* c = static_cast<Character*>(r);
         bool joined = ou->player->recruit(c, false);
-        DebugLog("TownLedger: [spawn recruit] " + c->getName() + (joined ? " joined" : " spawned, recruit refused"));
+        actionLog("[spawn recruit] " + c->getName() + (joined ? " joined" : " spawned, recruit refused"));
     }
 
     std::string describeJobs(Character* c)
@@ -858,7 +868,7 @@ namespace
         }
         if (chars.empty())
             note << " nobody selected";
-        DebugLog("TownLedger: [" + note.str() + "]");
+        actionLog("[" + note.str() + "]");
     }
 
     void onFreeCitizensClick(MyGUI::WidgetPtr)
@@ -866,7 +876,7 @@ namespace
         std::ostringstream note;
         note << "freed " << g_citizens.size() << " citizens";
         g_citizens.clear();
-        DebugLog("TownLedger: [" + note.str() + "]");
+        actionLog("[" + note.str() + "]");
     }
 
     void onCaptureRoleClick(MyGUI::WidgetPtr)
@@ -875,7 +885,7 @@ namespace
         selectedCharacters(chars);
         if (chars.empty())
         {
-            DebugLog("TownLedger: [capture role] select the character whose jobs to copy");
+            actionLog("[capture role] select the character whose jobs to copy");
             return;
         }
         Character* c = chars[0];
@@ -891,11 +901,21 @@ namespace
             job.name = c->getPermajobName(i);
             g_role.push_back(job);
         }
-        DebugLog("TownLedger: [capture role] from " + g_roleFrom + ": " + describeJobs(c));
+        actionLog("[capture role] from " + g_roleFrom + ": " + describeJobs(c));
     }
 
     void onAssignRoleClick(MyGUI::WidgetPtr)
     {
+        if (g_role.empty())
+        {
+            actionLog("[assign role] no role yet: select a character with jobs set up, click Capture role");
+            return;
+        }
+        if (g_citizens.empty())
+        {
+            actionLog("[assign role] no citizens yet: select a character, click Make citizen");
+            return;
+        }
         std::ostringstream note;
         note << "assign role (" << g_role.size() << " jobs from " << g_roleFrom << ") to "
              << g_citizens.size() << " citizens";
@@ -907,7 +927,7 @@ namespace
                 c->addJob(g_role[j].type, g_role[j].subject, false, true, g_role[j].location);
             note << "\n  " << c->getName() << ": " << describeJobs(c);
         }
-        DebugLog("TownLedger: [" + note.str() + "]");
+        actionLog("[" + note.str() + "]");
     }
 
     std::string buildCitizenReport()
@@ -1092,7 +1112,10 @@ namespace
                 << " of " << g_whichTownCalls << " previews cleared (our Hub flagged as foreign)\n";
         else
             out << "Hub not found\n";
-        out << "Population: " << people.size() << "\n\n";
+        if (!g_lastAction.empty())
+            out << "Last: " << g_lastAction << "\n";
+        out << "Population: " << people.size() << ", citizens " << g_citizens.size()
+            << ", role " << (g_role.empty() ? std::string("none") : g_roleFrom) << "\n\n";
         for (uint32_t i = 0; i < people.size(); ++i)
         {
             Character* c = people[i];
@@ -1107,6 +1130,7 @@ namespace
 
     void logReport(const std::string& why)
     {
+        g_lastAction = "[" + why + "]";
         DebugLog("TownLedger: [" + why + "]\n" + buildHubReport());
     }
 
@@ -1230,7 +1254,7 @@ namespace
             else
                 note << "; could not write " << REMOVALS_FILE;
         }
-        DebugLog("TownLedger: [" + note.str() + "]");
+        actionLog("[" + note.str() + "]");
         refresh();
     }
 
@@ -1270,7 +1294,7 @@ namespace
     void onSuppliesClick(MyGUI::WidgetPtr)
     {
         std::string result = giveDevSupplies();
-        DebugLog("TownLedger: [dev supplies] " + result);
+        actionLog("[dev supplies] " + result);
         refresh();
     }
 
