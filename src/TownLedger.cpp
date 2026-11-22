@@ -353,9 +353,10 @@ namespace
         return out.str();
     }
 
-    void whichTown_hook(PreviewBuilding* self)
+    // If the game found no town for a preview inside a Hub we own, give it the
+    // Hub, and record (once per change) what the game's own lookups saw.
+    void giveHubIfTownless(PreviewBuilding* self)
     {
-        whichTown_orig(self);
         ++g_whichTownCalls;
         if (self->inTown || !g_hub || !insideHub(self->getPosition()))
             return;
@@ -388,6 +389,24 @@ namespace
             if (self->inTown)
                 ++g_whichTownFixed;
         }
+    }
+
+    void whichTown_hook(PreviewBuilding* self)
+    {
+        whichTown_orig(self);
+        giveHubIfTownless(self);
+    }
+
+    // The click handler that refuses placement calls the preview's
+    // buildingPlacementUpdate (vtable +0x50) and then reads inTown, so fixing
+    // inTown on the way out of it covers whichever code set it. The building-
+    // town function above turned out not to run during ordinary placement.
+    void (*placementUpdate_orig)(PreviewBuilding*, physHit&, bool&, bool&) = NULL;
+
+    void placementUpdate_hook(PreviewBuilding* self, physHit& hit, bool& rightUp, bool& leftUp)
+    {
+        placementUpdate_orig(self, hit, rightUp, leftUp);
+        giveHubIfTownless(self);
     }
 
     // At RVA 0x4D6D90 in memory the prologue check failed, so the function is
@@ -1281,6 +1300,8 @@ __declspec(dllexport) void startPlugin()
             checkProspecting_hook, &checkProspecting_orig);
 
     hookWhichTown();
+    tryHook("buildingPlacementUpdate", KenshiLib::GetRealAddress(&PreviewBuilding::_NV_buildingPlacementUpdate),
+            placementUpdate_hook, &placementUpdate_orig);
 
     tryHook("selectObject", KenshiLib::GetRealAddress(&PlayerInterface::selectObject),
             selectObject_hook, &selectObject_orig);
