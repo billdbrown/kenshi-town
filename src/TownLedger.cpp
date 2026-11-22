@@ -51,6 +51,7 @@ namespace TaskerFields
 #include <mygui/MyGUI_Button.h>
 #include <mygui/MyGUI_EditBox.h>
 #include <mygui/MyGUI_Delegate.h>
+#include <mygui/MyGUI_ListBox.h>
 
 #include <core/Functions.h>
 
@@ -76,6 +77,9 @@ namespace
     }
 
     const int TOGGLE_KEY = VK_F8;
+    const int ROSTER_KEY = VK_F9;
+    bool g_rosterKeyWasDown = false;
+    void onRosterClick(MyGUI::WidgetPtr); // the Town Roster, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
 
@@ -853,14 +857,39 @@ namespace
         objectSelected_orig(self, obj, select);
     }
 
-    // Citizens carry a name prefix: it shows in game who is a citizen and who
-    // is retinue, and since names are saved it makes citizenship survive a
-    // reload (rebuilt from names by rebuildCitizensFromNames).
-    const std::string CITIZEN_PREFIX = "[Citizen] ";
+    // Citizens carry a tag in front of their name: "[Citizen] Double" with no
+    // profile yet, "[Miner] Double" once given one (see the Town Roster).
+    // Untagged characters are the retinue. The tag shows in game everywhere a
+    // name does, and since names are saved it is how citizenship and profiles
+    // survive a reload (rebuildCitizensFromNames).
+    const std::string CITIZEN_TAG = "Citizen";
+
+    // "[Miner] Double" -> "Miner"; "" when untagged.
+    std::string nameTag(Character* c)
+    {
+        std::string n = c->getName();
+        size_t close = n.find("] ");
+        if (n.empty() || n[0] != '[' || close == std::string::npos)
+            return "";
+        return n.substr(1, close - 1);
+    }
+
+    std::string bareName(Character* c)
+    {
+        std::string n = c->getName();
+        return nameTag(c).empty() ? n : n.substr(n.find("] ") + 2);
+    }
+
+    void setNameTag(Character* c, const std::string& tag)
+    {
+        std::string want = tag.empty() ? bareName(c) : "[" + tag + "] " + bareName(c);
+        if (c->getName() != want)
+            c->setName(want);
+    }
 
     bool hasCitizenPrefix(Character* c)
     {
-        return c->getName().compare(0, CITIZEN_PREFIX.size(), CITIZEN_PREFIX) == 0;
+        return !nameTag(c).empty();
     }
 
     void rebuildCitizensFromNames()
@@ -891,7 +920,7 @@ namespace
         {
             Character* c = chars[i];
             if (!hasCitizenPrefix(c))
-                c->setName(CITIZEN_PREFIX + c->getName());
+                setNameTag(c, CITIZEN_TAG);
             g_citizens.insert(c);
             ou->player->objectSelected(c, false);
             note << " " << c->getName();
@@ -906,8 +935,7 @@ namespace
         std::ostringstream note;
         note << "freed " << g_citizens.size() << " citizens";
         for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
-            if (hasCitizenPrefix(*it))
-                (*it)->setName((*it)->getName().substr(CITIZEN_PREFIX.size()));
+            setNameTag(*it, "");
         g_citizens.clear();
         actionLog("[" + note.str() + "]");
     }
@@ -1400,6 +1428,7 @@ namespace
         g_devButton = addButton(client, 9, "TownLedgerDev", onDevClick);
         addButton(client, 10, "TownLedgerRemoveSelected", onRemoveSelectedClick)->setCaption("Remove selected");
         addButton(client, 11, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
+        addButton(client, 12, "TownLedgerRoster", onRosterClick)->setCaption("Roster (F9)");
 
         g_window->setVisible(false);
     }
@@ -1414,6 +1443,426 @@ namespace
         g_window->setVisible(show);
         if (show)
             refresh();
+    }
+
+    // ==== Town Roster (F9): job profiles, and who works which ================
+    //
+    // A profile is a named set of standing jobs, captured from a character the
+    // player set up by hand. Each job remembers its building by name and
+    // position, so it can be found again after a reload or a rebuild: the
+    // nearest building of that name in the Hub. Profiles are saved to
+    // mods/TownLedger/profiles.txt. Who has which profile lives in the name
+    // tag ("[Miner] Double"), so assignments are saved with the game.
+
+    struct ProfileJob
+    {
+        TaskType type;
+        std::string label;    // the game's own job name, e.g. "Operating machine"
+        std::string building; // target building's name, "" for none
+        Ogre::Vector3 at;     // where that building was
+        Ogre::Vector3 location;
+    };
+
+    struct Profile
+    {
+        std::string name;
+        std::vector<ProfileJob> jobs;
+    };
+
+    std::vector<Profile> g_profiles;
+    const char* PROFILES_FILE = "mods\\TownLedger\\profiles.txt";
+
+    Profile* findProfile(const std::string& name)
+    {
+        for (size_t i = 0; i < g_profiles.size(); ++i)
+            if (g_profiles[i].name == name)
+                return &g_profiles[i];
+        return NULL;
+    }
+
+    // Tabs, newlines and brackets would break the file or the name tag.
+    std::string fileSafe(const std::string& s)
+    {
+        std::string out;
+        for (size_t i = 0; i < s.size(); ++i)
+            if (s[i] != '\t' && s[i] != '\n' && s[i] != '\r' && s[i] != '[' && s[i] != ']')
+                out += s[i];
+        return out;
+    }
+
+    void saveProfiles()
+    {
+        FILE* f = fopen(PROFILES_FILE, "w");
+        if (!f)
+        {
+            actionLog(std::string("[roster] could not write ") + PROFILES_FILE);
+            return;
+        }
+        fprintf(f, "# Kenshi Town job profiles. profile<TAB>name, then job<TAB>type<TAB>label<TAB>building<TAB>x y z<TAB>lx ly lz\n");
+        for (size_t i = 0; i < g_profiles.size(); ++i)
+        {
+            fprintf(f, "profile\t%s\n", g_profiles[i].name.c_str());
+            for (size_t j = 0; j < g_profiles[i].jobs.size(); ++j)
+            {
+                const ProfileJob& job = g_profiles[i].jobs[j];
+                fprintf(f, "job\t%d\t%s\t%s\t%f %f %f\t%f %f %f\n", int(job.type), job.label.c_str(),
+                        job.building.c_str(), job.at.x, job.at.y, job.at.z, job.location.x, job.location.y,
+                        job.location.z);
+            }
+        }
+        fclose(f);
+    }
+
+    void loadProfiles()
+    {
+        g_profiles.clear();
+        FILE* f = fopen(PROFILES_FILE, "r");
+        if (!f)
+            return;
+        char line[1024];
+        while (fgets(line, sizeof(line), f))
+        {
+            std::string l(line);
+            while (!l.empty() && (l[l.size() - 1] == '\n' || l[l.size() - 1] == '\r'))
+                l.erase(l.size() - 1);
+            std::vector<std::string> parts;
+            size_t start = 0, tab;
+            while ((tab = l.find('\t', start)) != std::string::npos)
+            {
+                parts.push_back(l.substr(start, tab - start));
+                start = tab + 1;
+            }
+            parts.push_back(l.substr(start));
+            if (parts.size() == 2 && parts[0] == "profile")
+            {
+                Profile p;
+                p.name = parts[1];
+                g_profiles.push_back(p);
+            }
+            else if (parts.size() == 6 && parts[0] == "job" && !g_profiles.empty())
+            {
+                ProfileJob job;
+                job.type = TaskType(atoi(parts[1].c_str()));
+                job.label = parts[2];
+                job.building = parts[3];
+                sscanf(parts[4].c_str(), "%f %f %f", &job.at.x, &job.at.y, &job.at.z);
+                sscanf(parts[5].c_str(), "%f %f %f", &job.location.x, &job.location.y, &job.location.z);
+                g_profiles.back().jobs.push_back(job);
+            }
+        }
+        fclose(f);
+        std::ostringstream note;
+        note << "TownLedger: loaded " << g_profiles.size() << " job profiles";
+        DebugLog(note.str());
+    }
+
+    // The building a job means now: same name, nearest to where it was, in
+    // the Hub. NULL if there is no such building any more.
+    Building* resolveBuilding(const ProfileJob& job)
+    {
+        if (job.building.empty())
+            return NULL;
+        std::vector<Building*> all;
+        hubBuildings(all);
+        Building* best = NULL;
+        float bestD = 0;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            if (all[i]->getName() != job.building)
+                continue;
+            Ogre::Vector3 p = all[i]->getPosition();
+            float d = (p - job.at).squaredLength();
+            if (!best || d < bestD)
+            {
+                best = all[i];
+                bestD = d;
+            }
+        }
+        return best;
+    }
+
+    // Give a character a profile: tag, citizenship, and the profile's jobs.
+    // Returns a short account for the status line.
+    std::string applyProfile(Character* c, const Profile& p)
+    {
+        setNameTag(c, p.name);
+        g_citizens.insert(c);
+        c->clearPermajobs();
+        int added = 0, missing = 0;
+        for (size_t j = 0; j < p.jobs.size(); ++j)
+        {
+            const ProfileJob& job = p.jobs[j];
+            Building* b = resolveBuilding(job);
+            if (!job.building.empty() && !b)
+            {
+                ++missing;
+                continue;
+            }
+            c->addJob(job.type, b, false, true, b ? b->getPosition() : job.location);
+            ++added;
+        }
+        std::ostringstream out;
+        out << bareName(c) << " -> " << p.name << ": " << added << " jobs";
+        if (missing)
+            out << ", " << missing << " buildings not found";
+        return out.str();
+    }
+
+    // ---- The window.
+
+    MyGUI::Window* g_roster = NULL;
+    MyGUI::ListBox* g_rosterProfiles = NULL;
+    MyGUI::ListBox* g_rosterPeople = NULL;
+    MyGUI::EditBox* g_rosterName = NULL;
+    MyGUI::EditBox* g_rosterStatus = NULL;
+    std::vector<Character*> g_rosterPeopleRows;
+    std::vector<std::string> g_rosterProfileRows, g_rosterPeopleText;
+
+    // Rows 0 and 1 of the profile list are fixed choices, not profiles.
+    const size_t ROW_RETINUE = 0, ROW_CITIZEN = 1, FIRST_PROFILE_ROW = 2;
+
+    // Refill a list only when its rows changed, keeping the selection, so a
+    // twice-a-second refresh doesn't fight the player's clicks.
+    void fillList(MyGUI::ListBox* list, std::vector<std::string>& shown, const std::vector<std::string>& rows)
+    {
+        if (rows == shown)
+            return;
+        size_t sel = list->getIndexSelected();
+        list->removeAllItems();
+        for (size_t i = 0; i < rows.size(); ++i)
+            list->addItem(rows[i]);
+        if (sel != MyGUI::ITEM_NONE && sel < rows.size())
+            list->setIndexSelected(sel);
+        shown = rows;
+    }
+
+    void refreshRoster()
+    {
+        if (!g_roster || !g_roster->getVisible() || !ou || !ou->player)
+            return;
+
+        std::vector<std::string> profileRows;
+        profileRows.push_back("(retinue: you control them)");
+        profileRows.push_back("(citizen, no job)");
+        for (size_t i = 0; i < g_profiles.size(); ++i)
+        {
+            std::ostringstream row;
+            row << g_profiles[i].name << "  -  " << g_profiles[i].jobs.size() << " jobs";
+            profileRows.push_back(row.str());
+        }
+        fillList(g_rosterProfiles, g_rosterProfileRows, profileRows);
+
+        const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+        std::vector<std::string> peopleRows;
+        g_rosterPeopleRows.clear();
+        for (uint32_t i = 0; i < people.size(); ++i)
+        {
+            Character* c = people[i];
+            if (!c)
+                continue;
+            std::string tag = nameTag(c);
+            std::ostringstream row;
+            row << bareName(c) << "  -  " << (tag.empty() ? "retinue" : tag) << "  -  " << currentActivity(c);
+            peopleRows.push_back(row.str());
+            g_rosterPeopleRows.push_back(c);
+        }
+        fillList(g_rosterPeople, g_rosterPeopleText, peopleRows);
+
+        g_rosterStatus->setCaption(g_lastAction);
+    }
+
+    Character* rosterSelectedPerson()
+    {
+        size_t i = g_rosterPeople->getIndexSelected();
+        return (i != MyGUI::ITEM_NONE && i < g_rosterPeopleRows.size()) ? g_rosterPeopleRows[i] : NULL;
+    }
+
+    void onRosterNewProfile(MyGUI::WidgetPtr)
+    {
+        std::vector<Character*> chars;
+        selectedCharacters(chars);
+        if (chars.empty() || chars[0]->getPermajobCount() == 0)
+        {
+            actionLog("[roster] select a character whose jobs you've set up, then New from selected");
+            refreshRoster();
+            return;
+        }
+        Character* c = chars[0];
+        std::string name = fileSafe(g_rosterName->getOnlyText().asUTF8());
+        if (name.empty() || name == CITIZEN_TAG)
+        {
+            std::ostringstream n;
+            n << "Profile " << g_profiles.size() + 1;
+            name = n.str();
+        }
+        Profile p;
+        p.name = name;
+        for (int i = 0; i < c->getPermajobCount(); ++i)
+        {
+            const Tasker* t = c->getPermajobData(i);
+            RootObject* subject = taskSubject(t);
+            ProfileJob job;
+            job.type = c->getPermajob(i);
+            job.label = fileSafe(c->getPermajobName(i));
+            job.building = subject ? fileSafe(subject->getName()) : "";
+            job.at = subject ? subject->getPosition() : Ogre::Vector3::ZERO;
+            job.location = taskLocation(t);
+            p.jobs.push_back(job);
+        }
+        Profile* existing = findProfile(name);
+        if (existing)
+            *existing = p;
+        else
+            g_profiles.push_back(p);
+        saveProfiles();
+        actionLog("[roster] " + std::string(existing ? "updated" : "new") + " profile " + name + " from " +
+                  bareName(c) + ": " + describeJobs(c));
+        refreshRoster();
+    }
+
+    void onRosterDeleteProfile(MyGUI::WidgetPtr)
+    {
+        size_t row = g_rosterProfiles->getIndexSelected();
+        if (row == MyGUI::ITEM_NONE || row < FIRST_PROFILE_ROW || row - FIRST_PROFILE_ROW >= g_profiles.size())
+        {
+            actionLog("[roster] pick a profile (not retinue or citizen) to delete");
+            refreshRoster();
+            return;
+        }
+        std::string name = g_profiles[row - FIRST_PROFILE_ROW].name;
+        g_profiles.erase(g_profiles.begin() + (row - FIRST_PROFILE_ROW));
+        // Its people keep their jobs but go back to plain citizens.
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+            if (nameTag(*it) == name)
+                setNameTag(*it, CITIZEN_TAG);
+        saveProfiles();
+        actionLog("[roster] deleted profile " + name);
+        refreshRoster();
+    }
+
+    void onRosterAssign(MyGUI::WidgetPtr)
+    {
+        Character* c = rosterSelectedPerson();
+        size_t row = g_rosterProfiles->getIndexSelected();
+        if (!c || row == MyGUI::ITEM_NONE)
+        {
+            actionLog("[roster] pick a person on the right and a profile on the left, then Assign");
+            refreshRoster();
+            return;
+        }
+        if (row == ROW_RETINUE)
+        {
+            setNameTag(c, "");
+            g_citizens.erase(c);
+            actionLog("[roster] " + bareName(c) + " -> retinue (yours to control)");
+        }
+        else if (row == ROW_CITIZEN)
+        {
+            setNameTag(c, CITIZEN_TAG);
+            g_citizens.insert(c);
+            c->clearPermajobs();
+            ou->player->objectSelected(c, false);
+            actionLog("[roster] " + bareName(c) + " -> citizen, no job");
+        }
+        else if (row - FIRST_PROFILE_ROW < g_profiles.size())
+        {
+            actionLog("[roster] " + applyProfile(c, g_profiles[row - FIRST_PROFILE_ROW]));
+            ou->player->objectSelected(c, false);
+        }
+        refreshRoster();
+    }
+
+    // Re-give every citizen their profile's jobs: after a reload, or after
+    // buildings were rebuilt or moved.
+    void onRosterReapply(MyGUI::WidgetPtr)
+    {
+        int n = 0;
+        std::ostringstream note;
+        note << "[roster] reapplied:";
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+        {
+            Profile* p = findProfile(nameTag(*it));
+            if (!p)
+                continue;
+            note << "\n  " << applyProfile(*it, *p);
+            ++n;
+        }
+        if (!n)
+            note << " nobody has a profile";
+        actionLog(note.str());
+        refreshRoster();
+    }
+
+    void onRosterWindowButton(MyGUI::Window* sender, const std::string& name)
+    {
+        if (name == "close")
+            sender->setVisible(false);
+    }
+
+    MyGUI::Button* rosterButton(MyGUI::Widget* client, float x, float y, float w, const char* name,
+                                const char* caption, void (*click)(MyGUI::WidgetPtr))
+    {
+        MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>("Kenshi_Button1", x, y, w, 0.08f,
+                                                                   MyGUI::Align::Default, name);
+        b->setCaption(caption);
+        b->eventMouseButtonClick += MyGUI::newDelegate(click);
+        return b;
+    }
+
+    void createRoster()
+    {
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        if (!gui)
+            return;
+        g_roster = gui->createWidgetReal<MyGUI::Window>("Kenshi_WindowCX", 0.2f, 0.15f, 0.46f, 0.62f,
+                                                        MyGUI::Align::Default, "Window", "TownRosterWindow");
+        g_roster->setCaption("Town Roster");
+        g_roster->eventWindowButtonPressed += MyGUI::newDelegate(onRosterWindowButton);
+        MyGUI::Widget* client = g_roster->getClientWidget();
+
+        // Left: profiles. Right: people. Pick one of each, then Assign.
+        g_rosterProfiles = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.02f, 0.02f, 0.40f, 0.58f,
+                                                                    MyGUI::Align::Default, "TownRosterProfiles");
+        g_rosterPeople = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.44f, 0.02f, 0.54f, 0.58f,
+                                                                  MyGUI::Align::Default, "TownRosterPeople");
+
+        g_rosterName = client->createWidgetReal<MyGUI::EditBox>("Kenshi_EditBox", 0.02f, 0.62f, 0.40f, 0.08f,
+                                                                MyGUI::Align::Default, "TownRosterName");
+        g_rosterName->setCaption("Miner");
+
+        rosterButton(client, 0.02f, 0.72f, 0.195f, "TownRosterNew", "New from selected", onRosterNewProfile);
+        rosterButton(client, 0.225f, 0.72f, 0.195f, "TownRosterDelete", "Delete profile", onRosterDeleteProfile);
+        rosterButton(client, 0.44f, 0.62f, 0.265f, "TownRosterAssign", "Assign", onRosterAssign);
+        rosterButton(client, 0.715f, 0.62f, 0.265f, "TownRosterReapply", "Reapply jobs", onRosterReapply);
+
+        g_rosterStatus = client->createWidgetReal<MyGUI::EditBox>("Kenshi_EditBox", 0.02f, 0.82f, 0.96f, 0.16f,
+                                                                  MyGUI::Align::Default, "TownRosterStatus");
+        g_rosterStatus->setEditMultiLine(true);
+        g_rosterStatus->setEditReadOnly(true);
+        g_rosterStatus->setEditWordWrap(true);
+
+        g_roster->setVisible(false);
+    }
+
+    void toggleRoster()
+    {
+        if (!g_roster)
+            createRoster();
+        if (!g_roster)
+            return;
+        bool show = !g_roster->getVisible();
+        g_roster->setVisible(show);
+        if (show)
+        {
+            g_rosterProfileRows.clear(); // force a refill
+            g_rosterPeopleText.clear();
+            refreshRoster();
+        }
+    }
+
+    void onRosterClick(MyGUI::WidgetPtr)
+    {
+        toggleRoster();
     }
 
     void (*mainLoop_orig)(GameWorld*, float) = NULL;
@@ -1448,6 +1897,13 @@ namespace
         if (down && !g_keyWasDown && kenshiHasFocus())
             toggle();
         g_keyWasDown = down;
+
+        bool rosterDown = (GetAsyncKeyState(ROSTER_KEY) & 0x8000) != 0;
+        if (rosterDown && !g_rosterKeyWasDown && kenshiHasFocus())
+            toggleRoster();
+        g_rosterKeyWasDown = rosterDown;
+        if (g_frame % REFRESH_EVERY_N_FRAMES == 0)
+            refreshRoster();
 
         if (g_window && g_window->getVisible() && g_frame % REFRESH_EVERY_N_FRAMES == 0)
             refresh();
@@ -1499,5 +1955,6 @@ __declspec(dllexport) void startPlugin()
     g_createBuilding = (CreateBuildingFn)KenshiLib::GetRealAddress(&RootObjectFactory::createBuilding);
     g_createChar = (CreateCharFn)KenshiLib::GetRealAddress(&RootObjectFactory::createRandomCharacter);
 
-    DebugLog("TownLedger: ready, press F8 in game");
+    loadProfiles();
+    DebugLog("TownLedger: ready, press F8 in game (F9 for the Town Roster)");
 }
