@@ -1776,14 +1776,31 @@ namespace
         StatRange skills[3];
     };
     const Background BACKGROUNDS[] = {
-        {"Labourer", {{STAT_LABOURING, 25, 40}, {STAT_STRENGTH, 15, 30}, {STAT_TOUGHNESS, 10, 20}}},
-        {"Farmhand", {{STAT_FARMING, 25, 40}, {STAT_COOKING, 10, 25}, {STAT_LABOURING, 5, 15}}},
-        {"Ex-guard", {{STAT_MELEE_ATTACK, 20, 35}, {STAT_MELEE_DEFENCE, 20, 35}, {STAT_TOUGHNESS, 15, 30}}},
-        {"Tinkerer", {{STAT_ENGINEERING, 20, 35}, {STAT_SCIENCE, 10, 25}, {STAT_DEXTERITY, 10, 20}}},
-        {"Smith", {{STAT_SMITHING_WEAPON, 15, 30}, {STAT_SMITHING_ARMOUR, 15, 30}, {STAT_STRENGTH, 10, 20}}},
-        {"Medic", {{STAT_MEDIC, 20, 35}, {STAT_DEXTERITY, 10, 20}, {STAT_SCIENCE, 5, 15}}},
+        // Main skill 14-24, second 8-14, third 5-10; Bill found 25-40 too strong.
+        {"Labourer", {{STAT_LABOURING, 14, 24}, {STAT_STRENGTH, 8, 14}, {STAT_TOUGHNESS, 5, 10}}},
+        {"Farmhand", {{STAT_FARMING, 14, 24}, {STAT_COOKING, 8, 14}, {STAT_LABOURING, 5, 10}}},
+        {"Ex-guard", {{STAT_MELEE_ATTACK, 14, 24}, {STAT_MELEE_DEFENCE, 8, 14}, {STAT_TOUGHNESS, 5, 10}}},
+        {"Tinkerer", {{STAT_ENGINEERING, 14, 24}, {STAT_SCIENCE, 8, 14}, {STAT_DEXTERITY, 5, 10}}},
+        {"Smith", {{STAT_SMITHING_WEAPON, 14, 24}, {STAT_SMITHING_ARMOUR, 8, 14}, {STAT_STRENGTH, 5, 10}}},
+        {"Medic", {{STAT_MEDIC, 14, 24}, {STAT_DEXTERITY, 8, 14}, {STAT_SCIENCE, 5, 10}}},
     };
     const size_t BACKGROUND_COUNT = sizeof(BACKGROUNDS) / sizeof(BACKGROUNDS[0]);
+
+    // Drifters come out of the template with good all-round stats. Knock every
+    // skill down to a random 1-8 first, so a background is what stands out.
+    void humbleStats(Character* c)
+    {
+        CharStats* st = c->getStats();
+        if (!st)
+            return;
+        for (int i = STAT_STRENGTH; i < STAT_END; ++i)
+        {
+            float& v = st->getStatRef(StatsEnumerated(i));
+            float cap = float(1 + rand() % 8);
+            if (v > cap)
+                v = cap;
+        }
+    }
 
     void applyBackground(Character* c, const Background& b)
     {
@@ -1865,6 +1882,7 @@ namespace
             a.who = static_cast<Character*>(r);
             a.hour = gameHours();
             const Background& b = BACKGROUNDS[rand() % BACKGROUND_COUNT];
+            humbleStats(a.who);
             applyBackground(a.who, b);
             a.background = b.name;
             g_gate.push_back(a);
@@ -2069,8 +2087,15 @@ namespace
         refreshRosterPicks();
     }
 
+    void lookAt(Character* c)
+    {
+        if (c && ou && ou->player)
+            ou->player->focusCamera(c->getPosition());
+    }
+
     void onRosterPersonPicked(MyGUI::MultiListBox*, size_t)
     {
+        lookAt(rosterSelectedPerson());
         refreshRosterPicks();
     }
 
@@ -2097,6 +2122,12 @@ namespace
             return NULL;
         *index = i;
         return g_gate[i].who;
+    }
+
+    void onRosterGatePicked(MyGUI::ListBox*, size_t)
+    {
+        size_t i = 0;
+        lookAt(gateSelected(&i));
     }
 
     void onGateAccept(MyGUI::WidgetPtr)
@@ -2306,6 +2337,7 @@ namespace
         g_rosterPeople->eventListChangePosition += MyGUI::newDelegate(onRosterPersonPicked);
         g_rosterGate = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.40f, 0.44f, 0.58f, 0.16f,
                                                                 MyGUI::Align::Default, "TownRosterGate");
+        g_rosterGate->eventListChangePosition += MyGUI::newDelegate(onRosterGatePicked);
         rosterButton(client, 0.40f, 0.61f, 0.285f, "TownRosterAccept", "Accept", onGateAccept);
         rosterButton(client, 0.695f, 0.61f, 0.285f, "TownRosterTurnAway", "Turn away", onGateTurnAway);
         g_rosterPick = rosterText(client, 0.40f, 0.70f, 0.58f, 0.075f, "TownRosterPick");
