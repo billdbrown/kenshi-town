@@ -318,6 +318,92 @@ namespace
         return ok;
     }
 
+    // ---- Which town a building joins. The building preview's `inTown` must
+    // be set or placing it fails with "Can't build too close to another town."
+    // It's filled by an unnamed game function at RVA 0x4D6D90 (KenshiLib's
+    // figureOutWhichTown address doesn't match this build), which in outline:
+    //   1. nearest town owned by the player faction, if in range;
+    //   2. else the town whose radius covers the spot, if its faction isPlayer;
+    //   3. else, near no town at all, a new player outpost.
+    // A Hub claimed in play passes; after a reload it stops passing even though
+    // it loads owned by Nameless. Until we know why, this hook makes the Hub
+    // the building's town whenever the game found none inside a Hub we own,
+    // and records what the lookups returned so the cause can be found.
+
+    const uintptr_t WHICH_TOWN_RVA = 0x4D6D90;
+    // The function's first 12 bytes in Kenshi 1.0.68, checked before hooking
+    // so a different game build is left alone.
+    const unsigned char WHICH_TOWN_PROLOGUE[] = {0x48, 0x8B, 0xC4, 0x55, 0x41, 0x54,
+                                                 0x41, 0x55, 0x41, 0x56, 0x41, 0x57};
+
+    long g_whichTownCalls = 0, g_whichTownNullInHub = 0, g_whichTownFixed = 0;
+    std::string g_whichTownDiag;
+
+    void (*whichTown_orig)(PreviewBuilding*) = NULL;
+    bool hubIsOurs();
+
+    std::string describeTown(TownBase* t)
+    {
+        if (!t)
+            return "none";
+        Faction* f = t->getFaction();
+        std::ostringstream out;
+        out << t->getName() << " (" << factionName(f) << (f && f->isPlayer ? ", isPlayer" : ", not player")
+            << (ou && ou->player && f == ou->player->getFaction() ? ", is our faction" : "") << ")";
+        return out.str();
+    }
+
+    void whichTown_hook(PreviewBuilding* self)
+    {
+        whichTown_orig(self);
+        ++g_whichTownCalls;
+        if (self->inTown || !g_hub || !insideHub(self->getPosition()))
+            return;
+        ++g_whichTownNullInHub;
+
+        // Once per change, record what the game's own lookups see here.
+        if (shou && shou->townList && ou && ou->player)
+        {
+            Ogre::Vector3 p = self->getPosition();
+            Faction* mine = ou->player->getFaction();
+            std::ostringstream diag;
+            diag << "nearest town owned by us: "
+                 << describeTown(shou->townList->getNearestTown(p, mine, NULL, NULL, TOWN_NULL))
+                 << "; town covering this spot: "
+                 << describeTown(shou->townList->getNearestWithinItsRadius(p, false))
+                 << "; covering, skipping player towns: "
+                 << describeTown(shou->townList->getNearestWithinItsRadius(p, true))
+                 << "; the Hub: " << describeTown(g_hub)
+                 << "; player faction isPlayer " << (mine && mine->isPlayer ? "set" : "NULL");
+            if (diag.str() != g_whichTownDiag)
+            {
+                g_whichTownDiag = diag.str();
+                DebugLog("TownLedger: [building town lookup] " + g_whichTownDiag);
+            }
+        }
+
+        if (hubIsOurs())
+        {
+            self->inTown = g_hub->isTown();
+            if (self->inTown)
+                ++g_whichTownFixed;
+        }
+    }
+
+    void hookWhichTown()
+    {
+        unsigned char* fn = reinterpret_cast<unsigned char*>(GetModuleHandle(NULL)) + WHICH_TOWN_RVA;
+        if (memcmp(fn, WHICH_TOWN_PROLOGUE, sizeof(WHICH_TOWN_PROLOGUE)) != 0)
+        {
+            ErrorLog("TownLedger: building-town function not where expected; not hooking it");
+            return;
+        }
+        if (KenshiLib::SUCCESS != KenshiLib::AddHook(reinterpret_cast<intptr_t>(fn), whichTown_hook, &whichTown_orig))
+            ErrorLog("TownLedger: could not hook the building-town function");
+        else
+            DebugLog("TownLedger: hooked the building-town function");
+    }
+
     // ---- Dev supplies: a General Storage Chest placed beside the selected
     // character, filled with building stock and a little research material.
     // What doesn't fit is discarded rather than dropped on the ground. Names
@@ -799,6 +885,8 @@ namespace
         out << "  base map reads: " << g_baseCalls << "\n";
 
         out << "\n3. Placement\n";
+        out << "  building town: " << g_whichTownCalls << " lookups, " << g_whichTownNullInHub
+            << " found no town in the Hub, " << g_whichTownFixed << " given the Hub\n";
         out << "  checks " << g_placeChecks << ", in Hub " << g_placeHubChecks
             << ", refused in Hub " << g_placeHubRefused << "\n";
         if (g_placeChecks)
@@ -1134,6 +1222,8 @@ __declspec(dllexport) void startPlugin()
             placementVerification_hook, &placementVerification_orig);
     tryHook("checkProspectingIsNotZero", KenshiLib::GetRealAddress(&PreviewBuilding::_NV_checkProspectingIsNotZero),
             checkProspecting_hook, &checkProspecting_orig);
+
+    hookWhichTown();
 
     tryHook("selectObject", KenshiLib::GetRealAddress(&PlayerInterface::selectObject),
             selectObject_hook, &selectObject_orig);
