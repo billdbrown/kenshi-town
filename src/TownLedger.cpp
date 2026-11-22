@@ -29,6 +29,8 @@
 #include <kenshi/RootObjectFactory.h>
 #include <kenshi/GameDataManager.h>
 #include <kenshi/Item.h>
+#include <kenshi/CharStats.h>
+#include <kenshi/Inventory.h>
 #include <kenshi/util/hand.h>
 // Tasker.h can't be included alongside AI/AITaskSystem.h: KenshiLib 0.4.0
 // defines `enum taskPriority` and its enumerators in both. We need only two
@@ -62,6 +64,7 @@ namespace TaskerFields
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <sstream>
@@ -1698,10 +1701,73 @@ namespace
     const double ARRIVAL_EVERY_HOURS = 12.0;
     const size_t GATE_MAX = 3;
 
+    // Skills that matter to the town, in the order "best at" breaks ties.
+    const StatsEnumerated WORK_STATS[] = {
+        STAT_LABOURING, STAT_FARMING,        STAT_COOKING,         STAT_ENGINEERING,
+        STAT_SCIENCE,   STAT_SMITHING_WEAPON, STAT_SMITHING_ARMOUR, STAT_MEDIC,
+        STAT_MELEE_ATTACK, STAT_MELEE_DEFENCE, STAT_TOUGHNESS,      STAT_STRENGTH};
+    const size_t WORK_STAT_COUNT = sizeof(WORK_STATS) / sizeof(WORK_STATS[0]);
+
+    // "Farming 34, Cooking 18": a character's best `n` town skills.
+    std::string topSkills(Character* c, size_t n)
+    {
+        CharStats* st = c ? c->getStats() : NULL;
+        if (!st)
+            return "";
+        std::vector<std::pair<float, size_t> > ranked;
+        for (size_t i = 0; i < WORK_STAT_COUNT; ++i)
+            ranked.push_back(std::make_pair(-st->getStat(WORK_STATS[i], false), i));
+        std::sort(ranked.begin(), ranked.end());
+        std::ostringstream out;
+        for (size_t i = 0; i < n && i < ranked.size(); ++i)
+            out << (i ? ", " : "") << CharStats::getStatName(WORK_STATS[ranked[i].second]) << " "
+                << int(-ranked[i].first);
+        return out.str();
+    }
+
+    // Backgrounds: an arrival's head start in a trade. Skills are raised to a
+    // random value in the range (never lowered); everything else stays at
+    // Drifter level, and training afterwards is Kenshi's own.
+    struct StatRange
+    {
+        StatsEnumerated stat;
+        int lo, hi;
+    };
+    struct Background
+    {
+        const char* name;
+        StatRange skills[3];
+    };
+    const Background BACKGROUNDS[] = {
+        {"Labourer", {{STAT_LABOURING, 25, 40}, {STAT_STRENGTH, 15, 30}, {STAT_TOUGHNESS, 10, 20}}},
+        {"Farmhand", {{STAT_FARMING, 25, 40}, {STAT_COOKING, 10, 25}, {STAT_LABOURING, 5, 15}}},
+        {"Ex-guard", {{STAT_MELEE_ATTACK, 20, 35}, {STAT_MELEE_DEFENCE, 20, 35}, {STAT_TOUGHNESS, 15, 30}}},
+        {"Tinkerer", {{STAT_ENGINEERING, 20, 35}, {STAT_SCIENCE, 10, 25}, {STAT_DEXTERITY, 10, 20}}},
+        {"Smith", {{STAT_SMITHING_WEAPON, 15, 30}, {STAT_SMITHING_ARMOUR, 15, 30}, {STAT_STRENGTH, 10, 20}}},
+        {"Medic", {{STAT_MEDIC, 20, 35}, {STAT_DEXTERITY, 10, 20}, {STAT_SCIENCE, 5, 15}}},
+    };
+    const size_t BACKGROUND_COUNT = sizeof(BACKGROUNDS) / sizeof(BACKGROUNDS[0]);
+
+    void applyBackground(Character* c, const Background& b)
+    {
+        CharStats* st = c->getStats();
+        if (!st)
+            return;
+        for (int i = 0; i < 3; ++i)
+        {
+            const StatRange& r = b.skills[i];
+            float& v = st->getStatRef(r.stat);
+            float want = float(r.lo + rand() % (r.hi - r.lo + 1));
+            if (want > v)
+                v = want;
+        }
+    }
+
     struct Arrival
     {
         Character* who;
         double hour; // in-game hour they arrived
+        std::string background;
     };
     std::vector<Arrival> g_gate;
     double g_nextArrivalHour = -1; // < 0: not scheduled yet (set after a load)
@@ -1761,6 +1827,9 @@ namespace
             Arrival a;
             a.who = static_cast<Character*>(r);
             a.hour = gameHours();
+            const Background& b = BACKGROUNDS[rand() % BACKGROUND_COUNT];
+            applyBackground(a.who, b);
+            a.background = b.name;
             g_gate.push_back(a);
             ++came;
         }
@@ -1865,7 +1934,7 @@ namespace
             }
             cells.push_back(rows[i].substr(start));
             list->addItem(cells[0]);
-            for (size_t c = 1; c < cells.size() && c < 3; ++c)
+            for (size_t c = 1; c < cells.size() && c < 4; ++c)
                 list->setSubItemNameAt(c, i, cells[c]);
         }
         if (sel != MyGUI::ITEM_NONE && sel < rows.size())
@@ -1917,6 +1986,8 @@ namespace
         std::string target = profileRowName(row);
         std::string pick = "Assign: " + (c ? bareName(c) : std::string("(pick a person)")) + "  ->  " +
                            (target.empty() ? std::string("(pick a profile)") : target);
+        if (c)
+            pick += "     (" + topSkills(c, 3) + ")";
         g_rosterPick->setCaption(pick);
     }
 
@@ -1945,7 +2016,8 @@ namespace
             if (!c)
                 continue;
             std::string tag = nameTag(c);
-            peopleRows.push_back(bareName(c) + "\t" + (tag.empty() ? "Retinue" : tag) + "\t" + currentActivity(c));
+            peopleRows.push_back(bareName(c) + "\t" + (tag.empty() ? "Retinue" : tag) + "\t" + topSkills(c, 1) +
+                                 "\t" + currentActivity(c));
             g_rosterPeopleRows.push_back(c);
         }
         fillTable(g_rosterPeople, g_rosterPeopleText, peopleRows);
@@ -1972,7 +2044,8 @@ namespace
         for (size_t i = 0; i < g_gate.size(); ++i)
         {
             std::ostringstream row;
-            row << g_gate[i].who->getName() << "  -  waiting " << int(now - g_gate[i].hour) << "h";
+            row << g_gate[i].who->getName() << "  -  " << g_gate[i].background << ": "
+                << topSkills(g_gate[i].who, 2) << "  -  waiting " << int(now - g_gate[i].hour) << "h";
             rows.push_back(row.str());
         }
         if (rows.empty())
@@ -2189,9 +2262,10 @@ namespace
         g_rosterPeople = client->createWidgetReal<MyGUI::MultiListBox>(
             "Kenshi_MultiListBox", 0.40f, 0.02f, 0.58f, 0.40f, MyGUI::Align::Default, "TownRosterPeople");
         int w = g_rosterPeople->getWidth();
-        g_rosterPeople->addColumn("Name", w * 30 / 100);
-        g_rosterPeople->addColumn("Profile", w * 25 / 100);
-        g_rosterPeople->addColumn("Doing", w * 45 / 100 - 4);
+        g_rosterPeople->addColumn("Name", w * 24 / 100);
+        g_rosterPeople->addColumn("Profile", w * 18 / 100);
+        g_rosterPeople->addColumn("Best at", w * 26 / 100);
+        g_rosterPeople->addColumn("Doing", w * 32 / 100 - 4);
         g_rosterPeople->eventListChangePosition += MyGUI::newDelegate(onRosterPersonPicked);
         g_rosterGate = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.40f, 0.44f, 0.58f, 0.16f,
                                                                 MyGUI::Align::Default, "TownRosterGate");
@@ -2228,11 +2302,167 @@ namespace
         toggleRoster();
     }
 
+    // ==== Town window: the Hub at a glance ====================================
+    //
+    // Population by profile, storage, who's at the gate, and a roll-up of
+    // every item in the Hub's player-owned storage. The base that food,
+    // contracts and the Engineer's "storage is full" rule will read from.
+
+    MyGUI::Window* g_town = NULL;
+    MyGUI::EditBox* g_townSummary = NULL;
+    MyGUI::MultiListBox* g_townStock = NULL;
+    std::vector<std::string> g_townStockRows;
+
+    struct StockLine
+    {
+        int count;
+        std::set<Building*> places;
+    };
+
+    // Every item in the Hub's player-owned buildings, by name. Returns how
+    // many of those buildings have an inventory at all.
+    int collectStock(std::map<std::string, StockLine>& out)
+    {
+        out.clear();
+        if (!ou || !ou->player || !g_hub)
+            return 0;
+        Faction* mine = ou->player->getFaction();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        int containers = 0;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            Building* b = all[i];
+            if (b->getFaction() != mine)
+                continue;
+            Inventory* inv = b->getInventory();
+            if (!inv)
+                continue;
+            ++containers;
+            lektor<InventorySection*>& sections = inv->getAllSections();
+            for (uint32_t s = 0; s < sections.size(); ++s)
+            {
+                if (!sections[s])
+                    continue;
+                const Ogre::vector<InventorySection::SectionItem>::type& items = sections[s]->getItems();
+                for (size_t k = 0; k < items.size(); ++k)
+                {
+                    Item* item = items[k].item;
+                    if (!item)
+                        continue;
+                    StockLine& line = out[item->getName()];
+                    line.count += item->quantity > 0 ? item->quantity : 1;
+                    line.places.insert(b);
+                }
+            }
+        }
+        return containers;
+    }
+
+    void refreshTown()
+    {
+        if (!g_town || !g_town->getVisible() || !ou || !ou->player)
+            return;
+
+        // Summary: people by profile, storage, the gate.
+        std::map<std::string, int> byProfile;
+        int retinue = 0, citizens = 0;
+        const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+        for (uint32_t i = 0; i < people.size(); ++i)
+        {
+            if (!people[i])
+                continue;
+            std::string tag = nameTag(people[i]);
+            if (tag.empty())
+                ++retinue;
+            else
+            {
+                ++citizens;
+                ++byProfile[tag == CITIZEN_TAG ? std::string("no job") : tag];
+            }
+        }
+        std::map<std::string, StockLine> stock;
+        int containers = collectStock(stock);
+
+        std::ostringstream sum;
+        sum << "The Hub: " << (g_hub ? factionName(g_hub->getFaction()) : std::string("not found"))
+            << "    Population " << retinue + citizens << ": retinue " << retinue << ", citizens " << citizens;
+        if (!byProfile.empty())
+        {
+            sum << " (";
+            for (std::map<std::string, int>::iterator it = byProfile.begin(); it != byProfile.end(); ++it)
+                sum << (it == byProfile.begin() ? "" : ", ") << it->first << " " << it->second;
+            sum << ")";
+        }
+        sum << "\nStorage: " << containers << " containers, " << stock.size() << " kinds of item"
+            << "    At the gate: " << g_gate.size();
+        g_townSummary->setCaption(sum.str());
+
+        // Stock table, biggest first.
+        std::vector<std::pair<int, std::string> > order;
+        for (std::map<std::string, StockLine>::iterator it = stock.begin(); it != stock.end(); ++it)
+            order.push_back(std::make_pair(-it->second.count, it->first));
+        std::sort(order.begin(), order.end());
+        std::vector<std::string> rows;
+        for (size_t i = 0; i < order.size(); ++i)
+        {
+            const StockLine& line = stock[order[i].second];
+            std::ostringstream row;
+            row << order[i].second << "\t" << line.count << "\t" << line.places.size()
+                << (line.places.size() == 1 ? " container" : " containers");
+            rows.push_back(row.str());
+        }
+        if (rows.empty())
+            rows.push_back("Nothing in storage yet.\t\t");
+        fillTable(g_townStock, g_townStockRows, rows);
+    }
+
+    void createTown()
+    {
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        if (!gui)
+            return;
+        g_town = gui->createWidgetReal<MyGUI::Window>("Kenshi_WindowCX", 0.25f, 0.18f, 0.40f, 0.58f,
+                                                      MyGUI::Align::Default, "Window", "TownAdminWindow");
+        g_town->setCaption("Town");
+        g_town->eventWindowButtonPressed += MyGUI::newDelegate(onRosterWindowButton);
+        MyGUI::Widget* client = g_town->getClientWidget();
+        g_townSummary = rosterText(client, 0.02f, 0.02f, 0.96f, 0.16f, "TownAdminSummary");
+        g_townStock = client->createWidgetReal<MyGUI::MultiListBox>(
+            "Kenshi_MultiListBox", 0.02f, 0.20f, 0.96f, 0.78f, MyGUI::Align::Default, "TownAdminStock");
+        int w = g_townStock->getWidth();
+        g_townStock->addColumn("Item", w * 55 / 100);
+        g_townStock->addColumn("Count", w * 18 / 100);
+        g_townStock->addColumn("In", w * 27 / 100 - 4);
+        g_town->setVisible(false);
+    }
+
+    void toggleTown()
+    {
+        if (!g_town)
+            createTown();
+        if (!g_town)
+            return;
+        bool show = !g_town->getVisible();
+        g_town->setVisible(show);
+        if (show)
+        {
+            g_townStockRows.clear();
+            refreshTown();
+        }
+    }
+
+    void onTownClick(MyGUI::WidgetPtr)
+    {
+        toggleTown();
+    }
+
     // ---- HUD buttons: Ledger and Roster, always on screen while a game is
     // loaded. Right edge, a third of the way down, clear of Kenshi's own bars.
 
     MyGUI::Button* g_hudLedger = NULL;
     MyGUI::Button* g_hudRoster = NULL;
+    MyGUI::Button* g_hudTown = NULL;
 
     void onHudLedgerClick(MyGUI::WidgetPtr)
     {
@@ -2256,11 +2486,13 @@ namespace
         {
             g_hudLedger = hudButton(0.30f, "TownLedgerHudLedger", "Ledger", onHudLedgerClick);
             g_hudRoster = hudButton(0.34f, "TownLedgerHudRoster", "Roster", onRosterClick);
+            g_hudTown = hudButton(0.38f, "TownLedgerHudTown", "Town", onTownClick);
         }
         if (g_hudLedger)
         {
             g_hudLedger->setVisible(inGame);
             g_hudRoster->setVisible(inGame);
+            g_hudTown->setVisible(inGame);
             std::ostringstream cap;
             cap << "Roster";
             if (!g_gate.empty())
@@ -2307,12 +2539,16 @@ namespace
                 g_window->setVisible(false);
             if (g_roster)
                 g_roster->setVisible(false);
+            if (g_town)
+                g_town->setVisible(false);
         }
         g_escWasDown = esc;
         if (g_frame % REFRESH_EVERY_N_FRAMES == 0)
         {
             refreshRoster();
             updateHud();
+            if (g_frame % (REFRESH_EVERY_N_FRAMES * 4) == 0)
+                refreshTown();
         }
 
         if (g_window && g_window->getVisible() && g_frame % REFRESH_EVERY_N_FRAMES == 0)
