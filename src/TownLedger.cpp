@@ -29,6 +29,14 @@
 #include <kenshi/GameDataManager.h>
 #include <kenshi/Item.h>
 #include <kenshi/util/hand.h>
+// Tasker.h can't be included alongside AI/AITaskSystem.h: KenshiLib 0.4.0
+// defines `enum taskPriority` and its enumerators in both. We need only two
+// Tasker fields, so read them at the offsets Tasker.h documents.
+namespace TaskerFields
+{
+    const size_t SUBJECT = 0x10;  // hand subject
+    const size_t LOCATION = 0x58; // Ogre::Vector3 location
+}
 #include <kenshi/Building/Building.h>
 // KenshiLib 0.4.0 bug: AI.h forward-declares `class CharacterMessage` while
 // Character.h defines it as an enum. Rename AI.h's copy for the include. Only
@@ -50,6 +58,7 @@
 #include <Windows.h>
 
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -374,6 +383,190 @@ namespace
         return out.str();
     }
 
+    // ---- Labour test: citizens and roles.
+    //
+    // A citizen is a player-faction character the player can no longer select;
+    // the plugin gives them their jobs. A role is a list of permajobs captured
+    // from a character the player set up by hand, so we never guess task types:
+    // Kenshi's own UI decides what "operate this mine" means, we copy it.
+    //
+    // Test-only state, in memory: a reload forgets who is a citizen.
+
+    std::set<Character*> g_citizens;
+    std::string currentActivity(Character* c);
+
+    struct RoleJob
+    {
+        TaskType type;
+        RootObject* subject;
+        Ogre::Vector3 location;
+        std::string name;
+    };
+    std::vector<RoleJob> g_role;
+    std::string g_roleFrom;
+
+    bool isCitizen(RootObject* obj)
+    {
+        return obj && g_citizens.count(static_cast<Character*>(obj)) != 0;
+    }
+
+    void selectedCharacters(std::vector<Character*>& out)
+    {
+        out.clear();
+        if (!ou || !ou->player)
+            return;
+        lektor<RootObject*> selected;
+        ou->player->getAllSelectedObjects(selected, CHARACTER);
+        for (uint32_t i = 0; i < selected.size(); ++i)
+            if (selected[i])
+                out.push_back(static_cast<Character*>(selected[i]));
+    }
+
+    RootObject* taskSubject(const Tasker* t)
+    {
+        if (!t)
+            return NULL;
+        const hand* h = reinterpret_cast<const hand*>(reinterpret_cast<const char*>(t) + TaskerFields::SUBJECT);
+        return h->getRootObject();
+    }
+
+    Ogre::Vector3 taskLocation(const Tasker* t)
+    {
+        if (!t)
+            return Ogre::Vector3::ZERO;
+        return *reinterpret_cast<const Ogre::Vector3*>(reinterpret_cast<const char*>(t) + TaskerFields::LOCATION);
+    }
+
+    std::string describeJobs(Character* c)
+    {
+        std::ostringstream out;
+        int n = c->getPermajobCount();
+        if (n == 0)
+            return "no jobs";
+        for (int i = 0; i < n; ++i)
+        {
+            const Tasker* t = c->getPermajobData(i);
+            RootObject* subject = taskSubject(t);
+            out << (i ? "; " : "") << c->getPermajobName(i) << " [" << int(c->getPermajob(i)) << "]";
+            if (subject)
+                out << " -> " << subject->getName();
+        }
+        return out.str();
+    }
+
+    // Selection lock. Every way of selecting a character (click, box, squad
+    // portrait) is expected to reach one of these two; the test checks that.
+    long g_selectionBlocked = 0;
+
+    void (*selectObject_orig)(PlayerInterface*, RootObject*, bool) = NULL;
+
+    void selectObject_hook(PlayerInterface* self, RootObject* obj, bool modifier)
+    {
+        if (isCitizen(obj))
+        {
+            ++g_selectionBlocked;
+            return;
+        }
+        selectObject_orig(self, obj, modifier);
+    }
+
+    void (*objectSelected_orig)(PlayerInterface*, RootObject*, bool) = NULL;
+
+    void objectSelected_hook(PlayerInterface* self, RootObject* obj, bool select)
+    {
+        if (select && isCitizen(obj))
+        {
+            ++g_selectionBlocked;
+            return;
+        }
+        objectSelected_orig(self, obj, select);
+    }
+
+    void onMakeCitizenClick(MyGUI::WidgetPtr)
+    {
+        std::vector<Character*> chars;
+        selectedCharacters(chars);
+        std::ostringstream note;
+        note << "make citizen:";
+        for (size_t i = 0; i < chars.size(); ++i)
+        {
+            g_citizens.insert(chars[i]);
+            ou->player->objectSelected(chars[i], false);
+            note << " " << chars[i]->getName();
+        }
+        if (chars.empty())
+            note << " nobody selected";
+        DebugLog("TownLedger: [" + note.str() + "]");
+    }
+
+    void onFreeCitizensClick(MyGUI::WidgetPtr)
+    {
+        std::ostringstream note;
+        note << "freed " << g_citizens.size() << " citizens";
+        g_citizens.clear();
+        DebugLog("TownLedger: [" + note.str() + "]");
+    }
+
+    void onCaptureRoleClick(MyGUI::WidgetPtr)
+    {
+        std::vector<Character*> chars;
+        selectedCharacters(chars);
+        if (chars.empty())
+        {
+            DebugLog("TownLedger: [capture role] select the character whose jobs to copy");
+            return;
+        }
+        Character* c = chars[0];
+        g_role.clear();
+        g_roleFrom = c->getName();
+        for (int i = 0; i < c->getPermajobCount(); ++i)
+        {
+            const Tasker* t = c->getPermajobData(i);
+            RoleJob job;
+            job.type = c->getPermajob(i);
+            job.subject = taskSubject(t);
+            job.location = taskLocation(t);
+            job.name = c->getPermajobName(i);
+            g_role.push_back(job);
+        }
+        DebugLog("TownLedger: [capture role] from " + g_roleFrom + ": " + describeJobs(c));
+    }
+
+    void onAssignRoleClick(MyGUI::WidgetPtr)
+    {
+        std::ostringstream note;
+        note << "assign role (" << g_role.size() << " jobs from " << g_roleFrom << ") to "
+             << g_citizens.size() << " citizens";
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+        {
+            Character* c = *it;
+            c->clearPermajobs();
+            for (size_t j = 0; j < g_role.size(); ++j)
+                c->addJob(g_role[j].type, g_role[j].subject, false, true, g_role[j].location);
+            note << "\n  " << c->getName() << ": " << describeJobs(c);
+        }
+        DebugLog("TownLedger: [" + note.str() + "]");
+    }
+
+    std::string buildCitizenReport()
+    {
+        std::ostringstream out;
+        out << "\n--- Labour test ---\n";
+        out << "Role: ";
+        if (g_role.empty())
+            out << "none captured";
+        else
+        {
+            out << g_role.size() << " jobs from " << g_roleFrom << ":";
+            for (size_t j = 0; j < g_role.size(); ++j)
+                out << (j ? "," : "") << " " << g_role[j].name;
+        }
+        out << "\nCitizens: " << g_citizens.size() << ", selections blocked " << g_selectionBlocked << "\n";
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+            out << "  " << (*it)->getName() << " - " << currentActivity(*it) << "\n    " << describeJobs(*it) << "\n";
+        return out.str();
+    }
+
     // ---- The ledger text.
 
     bool kenshiHasFocus()
@@ -536,6 +729,7 @@ namespace
                 continue;
             out << c->displayName << "  -  " << currentActivity(c) << "\n";
         }
+        out << buildCitizenReport();
         out << "\n" << buildHubReport();
         return out.str();
     }
@@ -708,13 +902,13 @@ namespace
         refresh();
     }
 
-    // Buttons sit in two rows of three under the text.
+    // Buttons sit in rows of three under the text.
     MyGUI::Button* addButton(MyGUI::Widget* client, int slot, const char* name, void (*click)(MyGUI::WidgetPtr))
     {
         const float width = 0.3f, gap = 0.02f;
         int col = slot % 3, row = slot / 3;
         MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>(
-            "Kenshi_Button1", 0.03f + col * (width + gap), 0.72f + row * 0.09f, width, 0.075f,
+            "Kenshi_Button1", 0.03f + col * (width + gap), 0.60f + row * 0.09f, width, 0.075f,
             MyGUI::Align::Left | MyGUI::Align::Bottom, name);
         b->eventMouseButtonClick += MyGUI::newDelegate(click);
         return b;
@@ -733,7 +927,7 @@ namespace
 
         MyGUI::Widget* client = g_window->getClientWidget();
         g_text = client->createWidgetReal<MyGUI::EditBox>(
-            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.68f,
+            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.56f,
             MyGUI::Align::Stretch, "TownLedgerText");
         g_text->setEditMultiLine(true);
         g_text->setEditReadOnly(true);
@@ -747,6 +941,10 @@ namespace
         addButton(client, 4, "TownLedgerSupplies", onSuppliesClick)->setCaption("Supplies");
         addButton(client, 5, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
         addButton(client, 6, "TownLedgerRemoveSelected", onRemoveSelectedClick)->setCaption("Remove selected");
+        addButton(client, 7, "TownLedgerCaptureRole", onCaptureRoleClick)->setCaption("Capture role");
+        addButton(client, 8, "TownLedgerMakeCitizen", onMakeCitizenClick)->setCaption("Make citizen");
+        addButton(client, 9, "TownLedgerAssignRole", onAssignRoleClick)->setCaption("Assign role");
+        addButton(client, 10, "TownLedgerFreeCitizens", onFreeCitizensClick)->setCaption("Free citizens");
 
         g_window->setVisible(false);
     }
@@ -823,6 +1021,11 @@ __declspec(dllexport) void startPlugin()
             placementVerification_hook, &placementVerification_orig);
     tryHook("checkProspectingIsNotZero", KenshiLib::GetRealAddress(&PreviewBuilding::_NV_checkProspectingIsNotZero),
             checkProspecting_hook, &checkProspecting_orig);
+
+    tryHook("selectObject", KenshiLib::GetRealAddress(&PlayerInterface::selectObject),
+            selectObject_hook, &selectObject_orig);
+    tryHook("objectSelected", KenshiLib::GetRealAddress(&PlayerInterface::objectSelected),
+            objectSelected_hook, &objectSelected_orig);
 
     g_createItem = (CreateItemFn)KenshiLib::GetRealAddress(
         static_cast<Item* (RootObjectFactory::*)(GameData*, const hand&, GameData*, GameData*, int, Faction*)>(
