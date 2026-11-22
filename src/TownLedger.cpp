@@ -273,9 +273,10 @@ namespace
         return ok;
     }
 
-    // ---- Dev supplies: research ingredients and building stock, given to the
-    // first selected character (overflow drops at their feet). Names are the
-    // game's own item names, read out of gamedata.base / rebirth.mod.
+    // ---- Dev supplies: a General Storage Chest placed beside the selected
+    // character, filled with building stock and a little research material.
+    // What doesn't fit is discarded rather than dropped on the ground. Names
+    // are the game's own, read out of gamedata.base / rebirth.mod.
 
     struct Supply
     {
@@ -283,17 +284,28 @@ namespace
         int count;
     };
     const Supply DEV_SUPPLIES[] = {
-        {"Book", 60},
-        {"Ancient Science Book", 15},
-        {"Engineering Research", 15},
-        {"AI Core", 8},
-        {"Building Materials", 60},
-        {"Iron Plates", 30},
-        {"Copper Alloy Plates", 20},
-        {"Steel Bars", 15},
-        {"Electrical Components", 15},
-        {"Fabrics", 15},
+        {"Building Materials", 40},
+        {"Iron Plates", 20},
+        {"Copper Alloy Plates", 15},
+        {"Steel Bars", 10},
+        {"Electrical Components", 10},
+        {"Fabrics", 10},
+        {"Book", 20},
+        {"Engineering Research", 5},
+        {"Ancient Science Book", 5},
+        {"AI Core", 3},
     };
+    const char* SUPPLY_CHEST_SID = "1459-gamedata.base"; // General Storage Chest
+
+    // createBuilding takes Vector3 and Quaternion by value; declaring the exact
+    // signature lets the compiler get the x64 ABI right (KenshiCoop's pattern).
+    typedef Building* (__fastcall* CreateBuildingFn)(
+        RootObjectFactory* self, GameData* data, Ogre::Vector3 position, TownBase* t,
+        Faction* owner, Ogre::Quaternion rotation, FactoryCallbackInterface* cb,
+        Layout* furnitureOf, Building* isDoorOf, GameSaveState* saveState,
+        Building* isIndoorsOf, bool invisible, bool completed, bool isFoliage,
+        int floorNumber, bool isOutsideFurniture);
+    CreateBuildingFn g_createBuilding = NULL;
 
     // createItem is overloaded; resolve the six-argument form explicitly, the
     // way KenshiCoop does. `const hand&` is passed as a pointer.
@@ -312,16 +324,31 @@ namespace
 
     std::string giveDevSupplies()
     {
-        if (!ou || !ou->player || !ou->theFactory || !g_createItem)
+        if (!ou || !ou->player || !ou->theFactory || !g_createItem || !g_createBuilding)
             return "no game loaded";
         lektor<RootObject*> selected;
         ou->player->getAllSelectedObjects(selected, CHARACTER);
         if (selected.size() == 0 || !selected[0])
             return "select a character first";
-        RootObject* who = selected[0];
+
+        GameData* chestData = ou->gamedata.getData(SUPPLY_CHEST_SID);
+        if (!chestData)
+            return "General Storage Chest not found in game data";
+
+        // Three metres to the side of the character. y = 0: createBuilding adds
+        // the terrain height itself.
+        Ogre::Vector3 at = selected[0]->getPosition();
+        Ogre::Vector3 pos(at.x + 30.0f, 0.0f, at.z);
+        TownBase* town = insideHub(pos) ? g_hub : NULL;
+        Building* chest = g_createBuilding(
+            ou->theFactory, chestData, pos, town, ou->player->getFaction(), Ogre::Quaternion::IDENTITY,
+            NULL, NULL, NULL, NULL, NULL, false, true, false, 0, false);
+        if (!chest)
+            return "createBuilding returned no chest";
+        RootObject* who = chest;
 
         std::ostringstream out;
-        out << "gave " << who->getName() << ":";
+        out << "chest at " << int(pos.x) << "," << int(pos.z) << ":";
         for (size_t s = 0; s < sizeof(DEV_SUPPLIES) / sizeof(DEV_SUPPLIES[0]); ++s)
         {
             GameData* d = findItemData(DEV_SUPPLIES[s].name);
@@ -337,7 +364,9 @@ namespace
                 Item* it = g_createItem(ou->theFactory, d, &none, NULL, NULL, -1, NULL);
                 if (!it)
                     break;
-                who->giveItem(it, true, false);
+                // Full chest: destroy the item instead of dropping it.
+                if (!who->giveItem(it, false, true))
+                    break;
                 ++given;
             }
             out << " " << DEV_SUPPLIES[s].name << " x" << given << ";";
@@ -593,6 +622,52 @@ namespace
         logReport(note.str());
     }
 
+    // Remove the selected buildings, if they're in the Hub, and append each to
+    // mods/TownLedger/removals.txt (name, x, z, destroyed) so a curated list
+    // can become the start's own clearance list. Not undoable.
+    const char* REMOVALS_FILE = "mods\\TownLedger\\removals.txt";
+
+    void onRemoveSelectedClick(MyGUI::WidgetPtr)
+    {
+        if (!ou || !ou->player || !g_hub)
+            return;
+        lektor<RootObject*> selected;
+        ou->player->getAllSelectedObjects(selected, BUILDING);
+        std::ostringstream note, file;
+        note << "remove selected: " << selected.size() << " buildings selected";
+        int removed = 0;
+        for (uint32_t i = 0; i < selected.size(); ++i)
+        {
+            Building* b = static_cast<Building*>(selected[i]);
+            if (!b)
+                continue;
+            Ogre::Vector3 p = b->getPosition();
+            if (!insideHub(p))
+            {
+                note << "; skipped " << b->getName() << " (outside the Hub)";
+                continue;
+            }
+            file << b->getName() << "\t" << p.x << "\t" << p.z << "\t"
+                 << (b->isDestroyed() ? "destroyed" : "intact") << "\n";
+            note << "; removed " << b->getName();
+            ou->dynamicDestroyBuilding(hand(b));
+            ++removed;
+        }
+        if (removed)
+        {
+            FILE* f = fopen(REMOVALS_FILE, "a");
+            if (f)
+            {
+                fputs(file.str().c_str(), f);
+                fclose(f);
+            }
+            else
+                note << "; could not write " << REMOVALS_FILE;
+        }
+        DebugLog("TownLedger: [" + note.str() + "]");
+        refresh();
+    }
+
     // Remove every destroyed building in the Hub, through the same queue the
     // game uses for dynamic building removal. Not undoable: test on a spare save.
     void onClearRuinsClick(MyGUI::WidgetPtr)
@@ -639,7 +714,7 @@ namespace
         const float width = 0.3f, gap = 0.02f;
         int col = slot % 3, row = slot / 3;
         MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>(
-            "Kenshi_Button1", 0.03f + col * (width + gap), 0.81f + row * 0.09f, width, 0.075f,
+            "Kenshi_Button1", 0.03f + col * (width + gap), 0.72f + row * 0.09f, width, 0.075f,
             MyGUI::Align::Left | MyGUI::Align::Bottom, name);
         b->eventMouseButtonClick += MyGUI::newDelegate(click);
         return b;
@@ -658,7 +733,7 @@ namespace
 
         MyGUI::Widget* client = g_window->getClientWidget();
         g_text = client->createWidgetReal<MyGUI::EditBox>(
-            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.77f,
+            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.68f,
             MyGUI::Align::Stretch, "TownLedgerText");
         g_text->setEditMultiLine(true);
         g_text->setEditReadOnly(true);
@@ -670,7 +745,8 @@ namespace
         g_claimButton = addButton(client, 2, "TownLedgerClaim", onClaimClick);
         g_devButton = addButton(client, 3, "TownLedgerDev", onDevClick);
         addButton(client, 4, "TownLedgerSupplies", onSuppliesClick)->setCaption("Supplies");
-        addButton(client, 5, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ruins");
+        addButton(client, 5, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
+        addButton(client, 6, "TownLedgerRemoveSelected", onRemoveSelectedClick)->setCaption("Remove selected");
 
         g_window->setVisible(false);
     }
@@ -751,6 +827,7 @@ __declspec(dllexport) void startPlugin()
     g_createItem = (CreateItemFn)KenshiLib::GetRealAddress(
         static_cast<Item* (RootObjectFactory::*)(GameData*, const hand&, GameData*, GameData*, int, Faction*)>(
             &RootObjectFactory::createItem));
+    g_createBuilding = (CreateBuildingFn)KenshiLib::GetRealAddress(&RootObjectFactory::createBuilding);
 
     DebugLog("TownLedger: ready, press F8 in game");
 }

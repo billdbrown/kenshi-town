@@ -42,7 +42,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>kenshilib.lib;MyGUIEngine_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>kenshilib.lib;OgreMain_x64.lib;MyGUIEngine_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
