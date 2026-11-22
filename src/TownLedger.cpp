@@ -98,6 +98,7 @@ namespace
     void onGarrisonDueNow(MyGUI::WidgetPtr);  // the garrison contract, further down
     void onCleanupHubNow(MyGUI::WidgetPtr);   // the Hub clean-up, further down
     void startContractOnClaim();               // the per-game record, further down
+    void toast(const std::string& text);       // HUD toasts, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
 
@@ -2001,6 +2002,9 @@ namespace
             note << "[arrivals] " << came << " drifter" << (came > 1 ? "s" : "") << " at the gate ("
                  << factionName(faction) << "): open the Roster";
             actionLog(note.str());
+            std::ostringstream t;
+            t << came << (came > 1 ? " drifters are" : " drifter is") << " at the gate";
+            toast(t.str());
         }
         return came;
     }
@@ -2476,6 +2480,7 @@ namespace
         bool gone;        // the garrison has left
         bool cleaned;     // the first-claim Hub clean-up has run in this save
         int warned;       // smallest warning threshold given (48, 24, 0), NO_WARNING if none
+        int quest;        // the guided-start task in progress (index into QUESTS)
     };
     std::map<std::string, Contract> g_contracts;
     bool g_contractsLoaded = false;
@@ -2492,11 +2497,11 @@ namespace
         FILE* f = fopen(CONTRACTS_FILE, "w");
         if (!f)
             return;
-        fprintf(f, "# Kenshi Town per-save state: save<TAB>start hour<TAB>paid until hour<TAB>gone<TAB>cleaned\n");
+        fprintf(f, "# Kenshi Town per-save state: save<TAB>start hour<TAB>paid until hour<TAB>gone<TAB>cleaned<TAB>quest\n");
         for (std::map<std::string, Contract>::iterator it = g_contracts.begin(); it != g_contracts.end(); ++it)
             if (it->first != "(unsaved)")
-                fprintf(f, "%s\t%f\t%f\t%d\t%d\n", it->first.c_str(), it->second.start, it->second.paidUntil,
-                        it->second.gone ? 1 : 0, it->second.cleaned ? 1 : 0);
+                fprintf(f, "%s\t%f\t%f\t%d\t%d\t%d\n", it->first.c_str(), it->second.start, it->second.paidUntil,
+                        it->second.gone ? 1 : 0, it->second.cleaned ? 1 : 0, it->second.quest);
         fclose(f);
     }
 
@@ -2513,10 +2518,11 @@ namespace
                 continue;
             char name[256];
             double start = 0, paid = 0;
-            int gone = 0, cleaned = 1; // saves recorded before the clean-up existed count as done
-            if (sscanf(line, "%255[^\t]\t%lf\t%lf\t%d\t%d", name, &start, &paid, &gone, &cleaned) >= 4)
+            int gone = 0, cleaned = 1, quest = 0; // older lines: clean-up counts as done
+            if (sscanf(line, "%255[^\t]\t%lf\t%lf\t%d\t%d\t%d", name, &start, &paid, &gone, &cleaned, &quest) >= 4)
             {
                 Contract c = {start, paid, gone != 0, cleaned != 0, NO_WARNING};
+                c.quest = quest;
                 if (std::string(name) != "(unsaved)")
                     g_contracts[name] = c;
             }
@@ -2820,7 +2826,7 @@ namespace
             bool grace = c->paidUntil <= c->start + GRACE_DAYS * 24.0 + 0.01;
             out << "Garrison: " << guards.size() << " Outlaws, ";
             if (left > 0)
-                out << left / 24.0 << " days " << (grace ? "of grace" : "paid") << " left";
+                out << int(left / 2.4) / 10.0 << " days " << (grace ? "of grace" : "paid") << " left";
             else
                 out << "PAYMENT DUE, they leave in " << int(left + OVERDUE_HOURS) << "h";
             out << ". A week costs " << weeklyFee(guards.size()) << " cats.";
@@ -2890,7 +2896,8 @@ namespace
     // contracts and the Engineer's "storage is full" rule will read from.
 
     MyGUI::Window* g_town = NULL;
-    MyGUI::EditBox* g_townSummary[3] = {NULL, NULL, NULL};
+    MyGUI::EditBox* g_townSummary[4] = {NULL, NULL, NULL, NULL};
+    std::string questLine(); // the guided start, further down
     MyGUI::MultiListBox* g_townStock = NULL;
     std::vector<std::string> g_townStockRows;
 
@@ -2976,11 +2983,11 @@ namespace
             sum << ")";
         }
         sum << "\nStorage: " << containers << " containers, " << stock.size() << " kinds of item"
-            << "    At the gate: " << g_gate.size() << "\n" << contractLine();
+            << "    At the gate: " << g_gate.size() << "\n" << contractLine() << "\n" << questLine();
         // One box per line: a multi-line caption showed only its first line.
         std::string all = sum.str();
         size_t start = 0;
-        for (int line = 0; line < 3; ++line)
+        for (int line = 0; line < 4; ++line)
         {
             size_t nl = all.find('\n', start);
             g_townSummary[line]->setCaption(start == std::string::npos ? std::string()
@@ -3010,16 +3017,16 @@ namespace
 
     void createTownContent(MyGUI::Widget* client)
     {
-        for (int line = 0; line < 3; ++line)
+        for (int line = 0; line < 4; ++line)
         {
             std::ostringstream name;
             name << "TownAdminSummary" << line;
             g_townSummary[line] = rosterText(client, 0.02f, 0.02f + line * 0.065f, 0.96f, 0.06f, name.str().c_str());
         }
-        rosterButton(client, 0.02f, 0.22f, 0.30f, "TownAdminPay", "Pay garrison a week", onGarrisonPay);
-        rosterButton(client, 0.33f, 0.22f, 0.20f, "TownAdminDismiss", "Dismiss", onGarrisonDismiss);
+        rosterButton(client, 0.02f, 0.285f, 0.30f, "TownAdminPay", "Pay garrison a week", onGarrisonPay);
+        rosterButton(client, 0.33f, 0.285f, 0.20f, "TownAdminDismiss", "Dismiss", onGarrisonDismiss);
         g_townStock = client->createWidgetReal<MyGUI::MultiListBox>(
-            "Kenshi_MultiListBox", 0.02f, 0.31f, 0.96f, 0.67f, MyGUI::Align::Default, "TownAdminStock");
+            "Kenshi_MultiListBox", 0.02f, 0.375f, 0.96f, 0.605f, MyGUI::Align::Default, "TownAdminStock");
         int w = g_townStock->getWidth();
         g_townStock->addColumn("Item", w * 55 / 100);
         g_townStock->addColumn("Count", w * 18 / 100);
@@ -3296,6 +3303,204 @@ namespace
             showTab(g_tabs ? g_tabs->getIndexSelected() : 0);
     }
 
+    // ==== Toasts ===============================================================
+    //
+    // Short-lived messages on the right of the HUD, right-justified against the
+    // screen edge, stacked above the Town button and the tray. Newest at the
+    // bottom; each fades after TOAST_SECONDS. Clicking one opens the Town tab.
+
+    struct Toast
+    {
+        std::string text;
+        DWORD until; // GetTickCount() when it goes
+    };
+    std::vector<Toast> g_toasts;
+    const DWORD TOAST_SECONDS = 10;
+    const size_t TOAST_MAX = 4;
+
+    void toast(const std::string& text)
+    {
+        Toast t;
+        t.text = text;
+        t.until = GetTickCount() + TOAST_SECONDS * 1000;
+        g_toasts.push_back(t);
+        if (g_toasts.size() > TOAST_MAX)
+            g_toasts.erase(g_toasts.begin());
+        DebugLog("TownLedger: [toast] " + text);
+    }
+
+    // ==== The guided start ======================================================
+    //
+    // A short chain of tasks that walks a new town through its first days:
+    // Kenshi itself has no quests. One task at a time, checked every couple of
+    // seconds; finishing one pays a little and starts the next. The step in
+    // progress is kept in the per-game record. Shown in the Town tab and
+    // announced with toasts.
+
+    bool hubHasStanding(const char* nameContains)
+    {
+        if (!ou || !ou->player)
+            return false;
+        Faction* mine = ou->player->getFaction();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        for (size_t i = 0; i < all.size(); ++i)
+            if (all[i]->getFaction() == mine && !all[i]->isDestroyed() && buildProgress(all[i]) >= 1.0f &&
+                all[i]->getName().find(nameContains) != std::string::npos)
+                return true;
+        return false;
+    }
+
+    int stockOf(const char* item)
+    {
+        std::map<std::string, StockLine> stock;
+        collectStock(stock);
+        std::map<std::string, StockLine>::iterator it = stock.find(item);
+        return it == stock.end() ? 0 : it->second.count;
+    }
+
+    bool qStormHousesCleared()
+    {
+        std::vector<Building*> all;
+        hubBuildings(all);
+        for (size_t i = 0; i < all.size(); ++i)
+            if (all[i]->getName() == "Old Storm House")
+                return false;
+        return true;
+    }
+
+    bool qMaterialStorage()
+    {
+        return hubHasStanding("Storage: Building Material");
+    }
+
+    bool qStoneMine()
+    {
+        return hubHasStanding("Stone Mine");
+    }
+
+    bool qStoneProcessor()
+    {
+        return hubHasStanding("Stone Processor");
+    }
+
+    bool qFirstCitizen()
+    {
+        return !g_citizens.empty();
+    }
+
+    bool qCitizenWithJob()
+    {
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+            if (nameTag(*it) != CITIZEN_TAG && !nameTag(*it).empty())
+                return true;
+        return false;
+    }
+
+    bool qBedsForAll()
+    {
+        if (!ou || !ou->player)
+            return false;
+        Faction* mine = ou->player->getFaction();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        int beds = 0;
+        for (size_t i = 0; i < all.size(); ++i)
+            if (all[i]->getFaction() == mine && all[i]->getSpecialFunction() == BF_BED && buildProgress(all[i]) >= 1.0f)
+                ++beds;
+        return beds > 0 && beds >= int(ou->player->getAllPlayerCharacters().size());
+    }
+
+    bool qStockpile()
+    {
+        return stockOf("Building Material") >= 100;
+    }
+
+    bool qOwnGuard()
+    {
+        if (!ou || !ou->player)
+            return false;
+        const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+        for (uint32_t i = 0; i < people.size(); ++i)
+        {
+            CharStats* st = people[i] ? people[i]->getStats() : NULL;
+            if (st && st->getStat(STAT_MELEE_ATTACK, false) >= 15.0f)
+                return true;
+        }
+        return false;
+    }
+
+    struct Quest
+    {
+        const char* title;
+        const char* hint;
+        int reward;
+        bool (*done)();
+    };
+    const Quest QUESTS[] = {
+        {"Clear the old storm houses", "Dismantle the Old Storm Houses: their materials start your stockpile.", 200,
+         qStormHousesCleared},
+        {"Build a storage for building materials", "Build menu, Storage. Builders keep materials there.", 300,
+         qMaterialStorage},
+        {"Open a stone mine", "Stone is under the Hub now. Build a Stone Mine and set someone to work it.", 300,
+         qStoneMine},
+        {"Process stone into building materials", "Build a Stone Processor next to the mine.", 300, qStoneProcessor},
+        {"Take in your first citizen", "Drifters come to the gate every half day. Accept one in the Roster.", 200,
+         qFirstCitizen},
+        {"Give a citizen a job", "Roster: capture a profile from someone you've set up, then Assign it.", 300,
+         qCitizenWithJob},
+        {"A bed for everyone", "Build beds until everyone in the town has one.", 300, qBedsForAll},
+        {"Stockpile 100 building materials", "Keep the mine and processor running.", 500, qStockpile},
+        {"Ready a guard of your own", "The Outlaws won't stay for free. Train someone to Melee Attack 15, or take in "
+                                      "an Ex-guard from the gate.",
+         500, qOwnGuard},
+    };
+    const int QUEST_COUNT = int(sizeof(QUESTS) / sizeof(QUESTS[0]));
+
+    std::string questLine()
+    {
+        Contract* c = currentContract();
+        if (!c || !hubIsOurs())
+            return "Task: claim the Hub.";
+        if (c->quest >= QUEST_COUNT)
+            return "The Hub stands on its own feet. No more tasks for now.";
+        std::ostringstream out;
+        out << "Task " << c->quest + 1 << "/" << QUEST_COUNT << ": " << QUESTS[c->quest].title << ". "
+            << QUESTS[c->quest].hint;
+        return out.str();
+    }
+
+    int g_questAnnounced = -1; // the step last toasted this session
+
+    void questTick()
+    {
+        if (!ou || !ou->player || !g_hub || !hubIsOurs())
+            return;
+        Contract* c = currentContract();
+        if (!c || c->quest >= QUEST_COUNT || buildingCount(g_hub) == 0)
+            return;
+        const Quest& q = QUESTS[c->quest];
+        if (q.done())
+        {
+            int* money = factionMoney(ou->player->getFaction());
+            if (money)
+                *money += q.reward;
+            std::ostringstream t;
+            t << "Done: " << q.title << "  (+" << q.reward << " cats)";
+            toast(t.str());
+            ++c->quest;
+            persistContract();
+            if (c->quest >= QUEST_COUNT)
+                toast("The Hub stands on its own feet.");
+            return; // the next task is announced on the next tick
+        }
+        if (g_questAnnounced != c->quest)
+        {
+            g_questAnnounced = c->quest;
+            toast(std::string("Task: ") + q.title);
+        }
+    }
+
     // The Town button sits directly above Kenshi's Money / Day box (bottom
     // right); the tray stacks upwards from just above it.
     const float HUD_X = 0.851f, HUD_Y = 0.712f, HUD_W = 0.10f, HUD_H = 0.035f;
@@ -3463,6 +3668,50 @@ namespace
             showTab(0);
     }
 
+    MyGUI::Button* g_toastLines[4] = {NULL, NULL, NULL, NULL};
+
+    void onToastClick(MyGUI::WidgetPtr)
+    {
+        showTab(0);
+    }
+
+    // Right-justified against the screen edge, above the tray's top line.
+    void updateToasts(bool inGame)
+    {
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        if (!gui)
+            return;
+        DWORD now = GetTickCount();
+        for (size_t i = 0; i < g_toasts.size();)
+            if (int(g_toasts[i].until - now) <= 0)
+                g_toasts.erase(g_toasts.begin() + i);
+            else
+                ++i;
+        float top = HUD_Y - (TRAY_LINES + 1) * (HUD_H + 0.004f) - 0.012f;
+        for (size_t i = 0; i < TOAST_MAX; ++i)
+        {
+            if (!g_toastLines[i])
+            {
+                std::ostringstream name;
+                name << "KenshiTownToast" << i;
+                g_toastLines[i] = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.6f, 0.5f, 0.3f, HUD_H,
+                                                                       MyGUI::Align::Default, "Main", name.str());
+                g_toastLines[i]->eventMouseButtonClick += MyGUI::newDelegate(onToastClick);
+            }
+            // Newest at the bottom: slot 0 is the newest toast.
+            bool show = inGame && i < g_toasts.size();
+            g_toastLines[i]->setVisible(show);
+            if (!show)
+                continue;
+            const Toast& t = g_toasts[g_toasts.size() - 1 - i];
+            float w = 0.02f + 0.0058f * float(t.text.size());
+            if (w > 0.45f)
+                w = 0.45f;
+            g_toastLines[i]->setRealCoord(0.996f - w, top - (i + 1) * (HUD_H + 0.004f), w, HUD_H);
+            g_toastLines[i]->setCaption(t.text);
+        }
+    }
+
     void updateTray(bool inGame)
     {
         MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
@@ -3522,6 +3771,7 @@ namespace
         if (!g_hudTown && inGame && MyGUI::Gui::getInstancePtr())
             g_hudTown = hudButton(HUD_Y, "KenshiTownHud", "Town", onTownClick);
         updateTray(inGame);
+        updateToasts(inGame);
         if (g_hudTown)
         {
             g_hudTown->setVisible(inGame);
@@ -3548,6 +3798,7 @@ namespace
             arrivalsTick();
             deedTick();
             contractTick();
+            questTick();
             if (hubIsOurs())
             {
                 std::string merged = consolidateHub();
