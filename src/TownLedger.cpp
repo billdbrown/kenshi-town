@@ -975,7 +975,7 @@ namespace
         const float width = 0.3f, gap = 0.02f;
         int col = slot % 3, row = slot / 3;
         MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>(
-            "Kenshi_Button1", 0.03f + col * (width + gap), 0.50f + row * 0.09f, width, 0.075f,
+            "Kenshi_Button1", 0.03f + col * (width + gap), 0.38f + row * 0.115f, width, 0.1f,
             MyGUI::Align::Left | MyGUI::Align::Bottom, name);
         b->eventMouseButtonClick += MyGUI::newDelegate(click);
         return b;
@@ -988,13 +988,13 @@ namespace
             return;
 
         g_window = gui->createWidgetReal<MyGUI::Window>(
-            "Kenshi_WindowCX", 0.58f, 0.1f, 0.38f, 0.75f,
+            "Kenshi_WindowCX", 0.68f, 0.2f, 0.3f, 0.55f,
             MyGUI::Align::Default, "Window", "TownLedgerWindow");
         g_window->setCaption("Town Ledger");
 
         MyGUI::Widget* client = g_window->getClientWidget();
         g_text = client->createWidgetReal<MyGUI::EditBox>(
-            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.46f,
+            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.34f,
             MyGUI::Align::Stretch, "TownLedgerText");
         g_text->setEditMultiLine(true);
         g_text->setEditReadOnly(true);
