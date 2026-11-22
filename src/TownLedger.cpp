@@ -853,6 +853,34 @@ namespace
         objectSelected_orig(self, obj, select);
     }
 
+    // Citizens carry a name prefix: it shows in game who is a citizen and who
+    // is retinue, and since names are saved it makes citizenship survive a
+    // reload (rebuilt from names by rebuildCitizensFromNames).
+    const std::string CITIZEN_PREFIX = "[Citizen] ";
+
+    bool hasCitizenPrefix(Character* c)
+    {
+        return c->getName().compare(0, CITIZEN_PREFIX.size(), CITIZEN_PREFIX) == 0;
+    }
+
+    void rebuildCitizensFromNames()
+    {
+        if (!ou || !ou->player)
+            return;
+        const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+        std::set<Character*> found;
+        for (uint32_t i = 0; i < people.size(); ++i)
+            if (people[i] && hasCitizenPrefix(people[i]))
+                found.insert(people[i]);
+        if (found != g_citizens)
+        {
+            g_citizens = found;
+            std::ostringstream note;
+            note << "TownLedger: citizens from names: " << g_citizens.size();
+            DebugLog(note.str());
+        }
+    }
+
     void onMakeCitizenClick(MyGUI::WidgetPtr)
     {
         std::vector<Character*> chars;
@@ -861,9 +889,12 @@ namespace
         note << "make citizen:";
         for (size_t i = 0; i < chars.size(); ++i)
         {
-            g_citizens.insert(chars[i]);
-            ou->player->objectSelected(chars[i], false);
-            note << " " << chars[i]->getName();
+            Character* c = chars[i];
+            if (!hasCitizenPrefix(c))
+                c->setName(CITIZEN_PREFIX + c->getName());
+            g_citizens.insert(c);
+            ou->player->objectSelected(c, false);
+            note << " " << c->getName();
         }
         if (chars.empty())
             note << " nobody selected";
@@ -874,6 +905,9 @@ namespace
     {
         std::ostringstream note;
         note << "freed " << g_citizens.size() << " citizens";
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+            if (hasCitizenPrefix(*it))
+                (*it)->setName((*it)->getName().substr(CITIZEN_PREFIX.size()));
         g_citizens.clear();
         actionLog("[" + note.str() + "]");
     }
@@ -903,6 +937,46 @@ namespace
         actionLog("[capture role] from " + g_roleFrom + ": " + describeJobs(c));
     }
 
+    // Add one standing job (permajob) to a citizen. Character::addJob with
+    // (shift=false, add=true) added nothing on 2026-11-22, so try the flag
+    // combinations, then the path the game's own right-click menu takes:
+    // select just this character (bypassing our selection lock) and call
+    // PlayerInterface::addJobSelectedCharacters. Returns which way worked.
+
+    std::string addStandingJob(Character* c, const RoleJob& job)
+    {
+        int before = c->getPermajobCount();
+        const bool flags[][2] = {{false, true}, {true, true}, {true, false}, {false, false}};
+        for (int i = 0; i < 4; ++i)
+        {
+            c->addJob(job.type, job.subject, flags[i][0], flags[i][1], job.location);
+            if (c->getPermajobCount() > before)
+            {
+                std::ostringstream how;
+                how << "addJob(shift=" << flags[i][0] << ", add=" << flags[i][1] << ")";
+                return how.str();
+            }
+        }
+
+        // The UI path, on a selection of exactly this character.
+        lektor<RootObject*> prior;
+        ou->player->getAllSelectedObjects(prior, CHARACTER);
+        for (uint32_t i = 0; i < prior.size(); ++i)
+            objectSelected_orig(ou->player, prior[i], false);
+        objectSelected_orig(ou->player, c, true);
+        std::string how = "none worked";
+        for (int shift = 0; shift < 2 && c->getPermajobCount() <= before; ++shift)
+        {
+            ou->player->addJobSelectedCharacters(job.type, job.subject, shift != 0, true, job.location);
+            if (c->getPermajobCount() > before)
+                how = shift ? "UI path (shift)" : "UI path";
+        }
+        objectSelected_orig(ou->player, c, false);
+        for (uint32_t i = 0; i < prior.size(); ++i)
+            objectSelected_orig(ou->player, prior[i], true);
+        return how;
+    }
+
     void onAssignRoleClick(MyGUI::WidgetPtr)
     {
         if (g_role.empty())
@@ -923,8 +997,8 @@ namespace
             Character* c = *it;
             c->clearPermajobs();
             for (size_t j = 0; j < g_role.size(); ++j)
-                c->addJob(g_role[j].type, g_role[j].subject, false, true, g_role[j].location);
-            note << "\n  " << c->getName() << ": " << describeJobs(c);
+                note << "\n  " << g_role[j].name << ": " << addStandingJob(c, g_role[j]);
+            note << "\n  " << c->getName() << " now: " << describeJobs(c);
         }
         actionLog("[" + note.str() + "]");
     }
@@ -1367,6 +1441,7 @@ namespace
         if (g_frame % FIND_HUB_EVERY_N_FRAMES == 1)
         {
             updateHubCache();
+            rebuildCitizensFromNames();
             if (g_devFast)
                 applyDevSpeed();
         }
