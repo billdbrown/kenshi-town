@@ -197,6 +197,9 @@ def install(path):
     if not os.path.isdir(dest):
         os.makedirs(dest)
     shutil.copy2(path, os.path.join(dest, name + ".mod"))
+    if name == "TownLedger":
+        import assets.chime as chime  # noqa: E402  the task-complete sound
+        chime.write(os.path.join(dest, "task_complete.wav"))
     if name == "KenshiTownDev":
         for f in ANKH_FILES:
             src = os.path.join(ANKH_DIR, f)

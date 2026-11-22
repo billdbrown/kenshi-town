@@ -61,6 +61,9 @@ namespace TaskerFields
 #include <mygui/MyGUI_TabItem.h>
 #include <mygui/MyGUI_TextBox.h>
 #include <mygui/MyGUI_ProgressBar.h>
+#include <windows.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 #include <kenshi/gui/DatapanelGUI.h>
 #include <kenshi/gui/DataPanelLine.h>
 
@@ -3125,10 +3128,12 @@ namespace
     std::string describeRepairState(Building* b)
     {
         std::ostringstream out;
-        Building::ConstructionState* st = b->getBuildState();
+        Building::ConstructionState* st = b->getBuildState_ActualNonShared();
         out << (b->isDestroyed() ? "still a ruin" : "no longer a ruin");
         if (st)
-            out << ", construction " << int(st->constructionProgress * 100.0f) << "%";
+            out << ", construction " << int(st->constructionProgress * 100.0f) << "%"
+                << (st->isComplete ? ", marked complete" : ", not complete") << ", materials needed "
+                << int(st->getTotalMats() - st->getTotalMatsPresent());
         return out.str();
     }
 
@@ -3162,6 +3167,21 @@ namespace
             return;
         }
         b->setDestroyed(false);
+        if (!instantly)
+        {
+            // Un-ruining alone left the building marked complete: repairs
+            // finished the moment they were ordered (2026-11-22). Reset its
+            // own construction state so builders have to bring materials.
+            Building::ConstructionState* st = b->getBuildState_ActualNonShared();
+            if (st)
+            {
+                st->setup(b->data);
+                st->isComplete = false;
+                st->isDismantled = false;
+                st->isPaused = false;
+                st->constructionProgress = 0.0f;
+            }
+        }
         b->setConstructionProgress(instantly ? 1.0f : 0.0f);
         std::string moved = moveIntoBase(b);
         actionLog("[buildings] repair " + std::string(instantly ? "now" : "ordered") + ": " + b->getName() + ": " +
@@ -3776,6 +3796,9 @@ namespace
             std::ostringstream t;
             t << "Done: " << q.title << "  (+" << q.reward << " cats)";
             toast(t.str());
+            // Played by us, not Kenshi (whose sounds are hashed Wwise events):
+            // made by scripts/assets/chime.py, installed with the mod.
+            PlaySoundA("mods\TownLedger\task_complete.wav", NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
             g_questJustDone = c->quest;
             g_questDoneUntil = GetTickCount() + QUEST_DONE_SHOW_MS;
             ++c->quest;
