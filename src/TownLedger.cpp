@@ -390,12 +390,69 @@ namespace
         }
     }
 
+    // At RVA 0x4D6D90 in memory the prologue check failed, so the function is
+    // found by a signature from its body instead: `mov rsi, rcx` through
+    // `mov r15d, 10`, unique in kenshi_x64.exe's .text, 0x43 bytes in.
+    const unsigned char WHICH_TOWN_SIG[] = {
+        0x48, 0x8b, 0xf1, 0x33, 0xff, 0x44, 0x8b, 0xef, 0x89, 0x7c, 0x24, 0x4c, 0x48, 0x8b, 0x89,
+        0xd8, 0x00, 0x00, 0x00, 0x48, 0x85, 0xc9, 0x75, 0x07, 0x48, 0x8b, 0x8e, 0xd0, 0x00, 0x00,
+        0x00, 0x41, 0xbf, 0x0a, 0x00, 0x00, 0x00, 0x48, 0x85, 0xc9, 0x74, 0x07, 0xe8};
+    const size_t WHICH_TOWN_SIG_OFFSET = 0x43;
+
+    std::string hexBytes(const unsigned char* p, size_t n)
+    {
+        std::ostringstream out;
+        for (size_t i = 0; i < n; ++i)
+        {
+            char b[4];
+            sprintf(b, "%02x ", p[i]);
+            out << b;
+        }
+        return out.str();
+    }
+
+    // Every match of `sig` in the game module's .text.
+    void findInGameText(const unsigned char* sig, size_t n, std::vector<unsigned char*>& out)
+    {
+        out.clear();
+        unsigned char* base = reinterpret_cast<unsigned char*>(GetModuleHandle(NULL));
+        IMAGE_NT_HEADERS* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(
+            base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+        IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+        for (int s = 0; s < nt->FileHeader.NumberOfSections; ++s, ++sec)
+        {
+            if (memcmp(sec->Name, ".text", 5) != 0)
+                continue;
+            unsigned char* p = base + sec->VirtualAddress;
+            unsigned char* end = p + sec->Misc.VirtualSize - n;
+            for (; p < end; ++p)
+                if (*p == sig[0] && memcmp(p, sig, n) == 0)
+                    out.push_back(p);
+        }
+    }
+
     void hookWhichTown()
     {
-        unsigned char* fn = reinterpret_cast<unsigned char*>(GetModuleHandle(NULL)) + WHICH_TOWN_RVA;
+        unsigned char* base = reinterpret_cast<unsigned char*>(GetModuleHandle(NULL));
+        DebugLog("TownLedger: bytes at RVA 0x4D6D90 in memory: " + hexBytes(base + WHICH_TOWN_RVA, 16));
+
+        std::vector<unsigned char*> hits;
+        findInGameText(WHICH_TOWN_SIG, sizeof(WHICH_TOWN_SIG), hits);
+        if (hits.size() != 1)
+        {
+            std::ostringstream msg;
+            msg << "TownLedger: building-town signature matched " << hits.size() << " times; not hooking";
+            ErrorLog(msg.str());
+            return;
+        }
+        unsigned char* fn = hits[0] - WHICH_TOWN_SIG_OFFSET;
+        std::ostringstream where;
+        where << "TownLedger: building-town function found at RVA 0x" << std::hex << (fn - base)
+              << ", starts " << hexBytes(fn, 12);
+        DebugLog(where.str());
         if (memcmp(fn, WHICH_TOWN_PROLOGUE, sizeof(WHICH_TOWN_PROLOGUE)) != 0)
         {
-            ErrorLog("TownLedger: building-town function not where expected; not hooking it");
+            ErrorLog("TownLedger: building-town function's prologue isn't as expected; not hooking it");
             return;
         }
         if (KenshiLib::SUCCESS != KenshiLib::AddHook(reinterpret_cast<intptr_t>(fn), whichTown_hook, &whichTown_orig))
