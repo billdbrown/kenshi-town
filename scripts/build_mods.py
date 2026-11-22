@@ -33,9 +33,17 @@ DEPENDENCIES = ["gamedata.base", "Newwworld.mod", "rebirth.mod", "Dialogue.mod"]
 WANDERER_START = ("1980-gamedata.base", "Wanderer")
 THE_HUB = ("18919-Newwworld.mod", "The Hub")
 THIEVES_GUILD = ("51709-rebirth.mod", "Thieves Guild")
+WANDERER_SQUAD = ("45550-gamedata.base", "startoff- Wanderer squad")
+NOTE_ITEM = None  # "Memo From Big Grim", resolved by name in town_ledger()
+
+# Must match DEED_NAME in src/TownLedger.cpp.
+DEED_NAME = "Deed to the Hub"
 
 
 def base(db, sid_and_name):
+    if sid_and_name is None:  # NOTE_ITEM: found by name, then checked like the rest
+        rec = db.named("Memo From Big Grim", "Item")
+        return rec
     sid, name = sid_and_name
     rec = db[sid]
     if kmod.text(rec.name) != name:
@@ -72,13 +80,25 @@ class Mod(object):
 def town_ledger(db):
     mod = Mod("TownLedger", "Kenshi Town: rebuild and run the Hub.")
 
+    # The deed: the founder arrives holding it, and the plugin claims the Hub
+    # for whoever holds it in a game where the Hub was never claimed. Cloned
+    # from a vanilla note item so it looks and handles like one.
+    deed = mod.new(base(db, NOTE_ITEM), DEED_NAME)
+    deed.set("str", "description",
+             "A deed to the Hub, signed by the last Holy Nation official who still cared. The walls, "
+             "the ruins and the trouble are yours now. The Outlaws who guard the place have agreed to "
+             "stay on for ten days.")
+
+    founder = mod.new(base(db, WANDERER_SQUAD), "startoff- Kenshi Town founder")
+    founder.add_ref("special items", deed.sid, 1, 0, 0)
+
     start = mod.new(base(db, WANDERER_START), "Kenshi Town: The Hub")
     start.set("str", "description",
-              "The Hub is a ruin and nobody wants it. Claim it, clear it and rebuild it into a town "
-              "worth living in. (Kenshi Town: open the Town Ledger with F8.)")
+              "The Hub is a ruin and you hold the deed to it. Clear it, rebuild it and run it as a "
+              "town worth living in. (Kenshi Town: the Town button opens the ledger and roster.)")
     start.set("str", "style", "Town")
-    # Starts at the Hub with the Wanderer's squad and money, inherited from
-    # the clone. Settlers and stock are a design decision still to make.
+    start.refs[b"squad"] = [(kmod._b(founder.sid), 0, 0, 0)]
+    # Starts at the Hub with the Wanderer's money, inherited from the clone.
 
     hub = mod.override(base(db, THE_HUB))
     thieves = base(db, THIEVES_GUILD)

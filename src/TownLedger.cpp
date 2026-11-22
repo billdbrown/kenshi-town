@@ -141,6 +141,7 @@ namespace
     // set changes.
     std::string g_hubCandidatesSeen;
     std::vector<TownBase*> g_hubTwins;
+    bool g_worldChanged = false; // set by findHub, consumed by currentContract
 
     TownBase* findHub()
     {
@@ -198,6 +199,19 @@ namespace
         // Twins: other town objects with the same name at the same spot. The
         // Hub loads as the real town plus an empty one, and new buildings get
         // assigned to the empty one.
+        // A different world has loaded if none of the Hub objects we last saw
+        // still exist; an unsaved game's per-save record resets then.
+        static std::vector<TownBase*> s_lastParts;
+        if (best)
+        {
+            bool known = s_lastParts.empty();
+            for (uint32_t i = 0; i < towns.size() && !known; ++i)
+                known = std::find(s_lastParts.begin(), s_lastParts.end(), static_cast<TownBase*>(towns[i])) !=
+                        s_lastParts.end();
+            if (!known)
+                g_worldChanged = true;
+        }
+
         g_hubTwins.clear();
         if (best)
         {
@@ -212,6 +226,8 @@ namespace
                 if (dx * dx + dz * dz < 100.0f * 100.0f)
                     g_hubTwins.push_back(t);
             }
+            s_lastParts.assign(1, best);
+            s_lastParts.insert(s_lastParts.end(), g_hubTwins.begin(), g_hubTwins.end());
         }
         return best;
     }
@@ -2476,8 +2492,9 @@ namespace
             return;
         fprintf(f, "# Kenshi Town per-save state: save<TAB>start hour<TAB>paid until hour<TAB>gone<TAB>cleaned\n");
         for (std::map<std::string, Contract>::iterator it = g_contracts.begin(); it != g_contracts.end(); ++it)
-            fprintf(f, "%s\t%f\t%f\t%d\t%d\n", it->first.c_str(), it->second.start, it->second.paidUntil,
-                    it->second.gone ? 1 : 0, it->second.cleaned ? 1 : 0);
+            if (it->first != "(unsaved)")
+                fprintf(f, "%s\t%f\t%f\t%d\t%d\n", it->first.c_str(), it->second.start, it->second.paidUntil,
+                        it->second.gone ? 1 : 0, it->second.cleaned ? 1 : 0);
         fclose(f);
     }
 
@@ -2498,7 +2515,8 @@ namespace
             if (sscanf(line, "%255[^\t]\t%lf\t%lf\t%d\t%d", name, &start, &paid, &gone, &cleaned) >= 4)
             {
                 Contract c = {start, paid, gone != 0, cleaned != 0, NO_WARNING};
-                g_contracts[name] = c;
+                if (std::string(name) != "(unsaved)")
+                    g_contracts[name] = c;
             }
         }
         fclose(f);
@@ -2526,12 +2544,52 @@ namespace
         return int(guards) * FEE_PER_GUARD_PER_DAY * 7;
     }
 
+    // A game not yet saved has no name, so its record is kept in memory and
+    // forgotten when a different world loads; on the first save it's carried
+    // over under the save's name. (Every new game once shared one "(unsaved)"
+    // record on disk, so the second new game never got its clean-up.)
+    Contract g_unsaved;
+    bool g_unsavedValid = false;
+    const std::string UNSAVED = "(unsaved)";
+
     Contract* currentContract()
     {
         if (!g_contractsLoaded)
             loadContracts();
-        std::map<std::string, Contract>::iterator it = g_contracts.find(saveName());
-        return it == g_contracts.end() ? NULL : &it->second;
+        if (g_worldChanged) // a different world: an unsaved game's record doesn't carry over
+        {
+            g_unsavedValid = false;
+            g_worldChanged = false;
+        }
+        std::string name = saveName();
+        if (name == UNSAVED)
+            return g_unsavedValid ? &g_unsaved : NULL;
+        std::map<std::string, Contract>::iterator it = g_contracts.find(name);
+        if (it != g_contracts.end())
+            return &it->second;
+        if (g_unsavedValid) // first save of a new game
+        {
+            g_contracts[name] = g_unsaved;
+            g_unsavedValid = false;
+            saveContracts();
+            return &g_contracts[name];
+        }
+        return NULL;
+    }
+
+    void storeContract(const Contract& c)
+    {
+        std::string name = saveName();
+        if (name == UNSAVED)
+        {
+            g_unsaved = c;
+            g_unsavedValid = true;
+        }
+        else
+        {
+            g_contracts[name] = c;
+            saveContracts();
+        }
     }
 
     void garrisonLeaves(Contract& c, const std::string& why)
@@ -2618,6 +2676,47 @@ namespace
         return out.str();
     }
 
+    // ---- The deed. The Kenshi Town start gives the founder a "Deed to the
+    // Hub" (TownLedger.mod); in a game where the Hub was never claimed, the
+    // plugin claims it for whoever holds the deed.
+    const char* DEED_NAME = "Deed to the Hub"; // matches scripts/build_mods.py
+
+    bool playerHoldsDeed()
+    {
+        if (!ou || !ou->player)
+            return false;
+        const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+        for (uint32_t i = 0; i < people.size(); ++i)
+        {
+            Inventory* inv = people[i] ? people[i]->getInventory() : NULL;
+            if (!inv)
+                continue;
+            lektor<InventorySection*>& sections = inv->getAllSections();
+            for (uint32_t s = 0; s < sections.size(); ++s)
+            {
+                if (!sections[s])
+                    continue;
+                const Ogre::vector<InventorySection::SectionItem>::type& items = sections[s]->getItems();
+                for (size_t k = 0; k < items.size(); ++k)
+                    if (items[k].item && items[k].item->getName() == DEED_NAME)
+                        return true;
+            }
+        }
+        return false;
+    }
+
+    void onClaimClick(MyGUI::WidgetPtr);
+
+    void deedTick()
+    {
+        if (!g_hub || hubIsOurs() || buildingCount(g_hub) == 0 || currentContract())
+            return; // no Hub yet, already ours, still loading, or claimed before in this game
+        if (!playerHoldsDeed())
+            return;
+        onClaimClick(NULL);
+        actionLog("[hub] you hold the deed: the Hub is yours");
+    }
+
     void onCleanupHubNow(MyGUI::WidgetPtr)
     {
         if (!g_hub || !hubIsOurs())
@@ -2639,8 +2738,7 @@ namespace
         if (!c)
         {
             Contract fresh = {now, now + GRACE_DAYS * 24.0, false, false, NO_WARNING};
-            g_contracts[saveName()] = fresh;
-            saveContracts();
+            storeContract(fresh);
             std::ostringstream note;
             note << "[garrison] the Outlaws will guard the Hub for " << int(GRACE_DAYS)
                  << " days. After that they want paying (see Town).";
@@ -3423,6 +3521,7 @@ namespace
             rebuildCitizensFromNames();
             autoReapplyTick();
             arrivalsTick();
+            deedTick();
             contractTick();
             if (hubIsOurs())
             {
