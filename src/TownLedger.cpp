@@ -1,9 +1,14 @@
-// Town Ledger: milestone 1 of kenshi-town.
+// Town Ledger: kenshi-town's in-game panel.
 //
-// A read-only management panel. Press F8 in game to toggle a window listing
-// every character in the player faction with what they are doing right now.
-// Its real job is proving the toolchain: build, load, hook the main loop, draw
-// MyGUI, read live game state. City-builder behaviour comes after this works.
+// Press F8 in game to toggle a window listing the player faction and, below
+// it, the Hub experiment: three questions about making the Hub the town.
+//
+//   1. Ore:   does hooking ZoneManager::getResource change what mines see?
+//   2. Claim: does TownBase::setFaction hand the Hub's buildings to the player?
+//   3. Build: can the player place buildings inside the Hub once it is theirs?
+//
+// Everything the experiment learns is written to RE_Kenshi_log.txt, prefixed
+// "TownLedger:", so a play session can be read back afterwards.
 
 #include <Debug.h>
 
@@ -11,6 +16,12 @@
 #include <kenshi/GameWorld.h>
 #include <kenshi/PlayerInterface.h>
 #include <kenshi/Character.h>
+#include <kenshi/Faction.h>
+#include <kenshi/Town.h>
+#include <kenshi/SharedKing.h>
+#include <kenshi/ZoneManager.h>
+#include <kenshi/Enums.h>
+#include <kenshi/Building/Building.h>
 // KenshiLib 0.4.0 bug: AI.h forward-declares `class CharacterMessage` while
 // Character.h defines it as an enum. Rename AI.h's copy for the include. Only
 // AI::sendMessage uses it, and we never call that.
@@ -30,6 +41,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#include <map>
 #include <sstream>
 #include <string>
 
@@ -37,11 +49,186 @@ namespace
 {
     const int TOGGLE_KEY = VK_F8;
     const int REFRESH_EVERY_N_FRAMES = 30;
+    const int FIND_HUB_EVERY_N_FRAMES = 120;
+
+    // Ore the Hub gets while the override is on. Scale assumed 0..1; the
+    // first real readings in the log will confirm or correct that.
+    const float HUB_STONE = 0.8f;
+    const float HUB_IRON = 0.6f;
+    const float HUB_COPPER = 0.5f;
 
     MyGUI::Window* g_window = NULL;
     MyGUI::EditBox* g_text = NULL;
+    MyGUI::Button* g_oreButton = NULL;
+    MyGUI::Button* g_claimButton = NULL;
+    MyGUI::Button* g_placeButton = NULL;
     bool g_keyWasDown = false;
     int g_frame = 0;
+
+    // ---- The Hub, cached from the main loop so hooks never search for it.
+
+    TownBase* g_hub = NULL;
+    Faction* g_hubOriginalFaction = NULL;
+    volatile bool g_hubKnown = false;
+    volatile float g_hubX = 0, g_hubZ = 0, g_hubRadius = 0;
+
+    bool insideHub(const Ogre::Vector3& p)
+    {
+        if (!g_hubKnown)
+            return false;
+        float dx = p.x - g_hubX, dz = p.z - g_hubZ;
+        return dx * dx + dz * dz <= g_hubRadius * g_hubRadius;
+    }
+
+    TownBase* findHub()
+    {
+        if (!shou || !shou->townList)
+            return NULL;
+        lektor<RootObject*>& towns = shou->townList->getAllTowns();
+        TownBase* fallback = NULL;
+        for (uint32_t i = 0; i < towns.size(); ++i)
+        {
+            TownBase* t = static_cast<TownBase*>(towns[i]);
+            if (!t)
+                continue;
+            std::string name = t->getName();
+            if (name == "The Hub")
+                return t;
+            if (!fallback && name.find("Hub") != std::string::npos)
+                fallback = t;
+        }
+        return fallback;
+    }
+
+    void updateHubCache()
+    {
+        TownBase* hub = findHub();
+        if (hub != g_hub)
+        {
+            g_hub = hub;
+            g_hubOriginalFaction = hub ? hub->getFaction() : NULL;
+            if (hub)
+                DebugLog("TownLedger: found town '" + hub->getName() + "'");
+        }
+        if (!hub)
+        {
+            g_hubKnown = false;
+            return;
+        }
+        Ogre::Vector3 p = hub->getPosition();
+        g_hubX = p.x;
+        g_hubZ = p.z;
+        g_hubRadius = hub->getRadius();
+        g_hubKnown = true;
+    }
+
+    std::string factionName(Faction* f)
+    {
+        return f ? f->getName() : std::string("(none)");
+    }
+
+    // ---- Question 1: ore. Hook getResource, and count getResourceBase so we
+    // learn whether anything reads the base map directly and would miss us.
+
+    struct OreSample
+    {
+        volatile long calls;
+        volatile long hubCalls;
+        float lastOriginal;
+        float lastReturned;
+    };
+    OreSample g_ore[8] = {};       // indexed by MiningResource
+    volatile long g_baseCalls = 0;
+    bool g_oreOverride = false;
+    bool g_loggedScale = false;
+
+    float hubOreFor(MiningResource r)
+    {
+        switch (r)
+        {
+        case STONE: return HUB_STONE;
+        case IRON: return HUB_IRON;
+        case COPPER: return HUB_COPPER;
+        default: return -1.0f;
+        }
+    }
+
+    float (*getResource_orig)(ZoneManager*, MiningResource, AreaBiomeGroup*, const Ogre::Vector3&) = NULL;
+
+    float getResource_hook(ZoneManager* self, MiningResource r, AreaBiomeGroup* biome, const Ogre::Vector3& p)
+    {
+        float original = getResource_orig(self, r, biome, p);
+        float returned = original;
+        bool inside = insideHub(p);
+        float target = hubOreFor(r);
+        if (g_oreOverride && inside && target > original)
+            returned = target;
+
+        if (r >= 0 && r < 8)
+        {
+            OreSample& s = g_ore[r];
+            InterlockedIncrement(&s.calls);
+            if (inside)
+            {
+                InterlockedIncrement(&s.hubCalls);
+                s.lastOriginal = original;
+                s.lastReturned = returned;
+            }
+        }
+        return returned;
+    }
+
+    float (*getResourceBase_orig)(ZoneManager*, MiningResource, AreaBiomeGroup*, const Ogre::Vector3&) = NULL;
+
+    float getResourceBase_hook(ZoneManager* self, MiningResource r, AreaBiomeGroup* biome, const Ogre::Vector3& p)
+    {
+        InterlockedIncrement(&g_baseCalls);
+        return getResourceBase_orig(self, r, biome, p);
+    }
+
+    // ---- Question 3: building. Watch the game's own placement verdicts, and
+    // optionally force them inside the Hub if ownership alone isn't enough.
+
+    long g_placeChecks = 0;
+    long g_placeHubChecks = 0;
+    long g_placeHubRefused = 0;
+    long g_prospectChecks = 0;
+    bool g_lastPlaceResult = false;
+    bool g_lastPlaceInHub = false;
+    bool g_lastProspect = false;
+    bool g_forcePlacement = false;
+
+    bool (*placementVerification_orig)(PreviewBuilding*) = NULL;
+
+    bool placementVerification_hook(PreviewBuilding* self)
+    {
+        bool ok = placementVerification_orig(self);
+        bool inHub = insideHub(self->getPosition());
+        ++g_placeChecks;
+        if (inHub)
+        {
+            ++g_placeHubChecks;
+            if (!ok)
+                ++g_placeHubRefused;
+            if (!ok && g_forcePlacement)
+                ok = true;
+        }
+        g_lastPlaceResult = ok;
+        g_lastPlaceInHub = inHub;
+        return ok;
+    }
+
+    bool (*checkProspecting_orig)(PreviewBuilding*) = NULL;
+
+    bool checkProspecting_hook(PreviewBuilding* self)
+    {
+        bool ok = checkProspecting_orig(self);
+        ++g_prospectChecks;
+        g_lastProspect = ok;
+        return ok;
+    }
+
+    // ---- The ledger text.
 
     bool kenshiHasFocus()
     {
@@ -63,6 +250,74 @@ namespace
         return goal.empty() ? "idle" : goal;
     }
 
+    void writeOreLine(std::ostringstream& out, const char* label, MiningResource r)
+    {
+        const OreSample& s = g_ore[r];
+        out << "  " << label << ": " << s.calls << " calls, " << s.hubCalls << " in Hub";
+        if (s.hubCalls)
+            out << ", last " << s.lastOriginal << " -> " << s.lastReturned;
+        out << "\n";
+    }
+
+    std::string buildingOwners()
+    {
+        TownBuildingsManager* mgr = g_hub->getBuildingsManager();
+        if (!mgr)
+            return "  (no buildings manager)\n";
+
+        std::map<std::string, int> byOwner;
+        int total = 0;
+        for (ogre_unordered_map<Building*, TownBuildingsManager::BuildingInfo>::type::iterator it =
+                 mgr->buildingEntities.begin();
+             it != mgr->buildingEntities.end(); ++it)
+        {
+            Building* b = it->first;
+            if (!b)
+                continue;
+            ++byOwner[factionName(b->getFaction())];
+            ++total;
+        }
+        std::ostringstream out;
+        out << "  " << total << " buildings:";
+        for (std::map<std::string, int>::iterator it = byOwner.begin(); it != byOwner.end(); ++it)
+            out << " " << it->first << " " << it->second << ";";
+        out << "\n";
+        return out.str();
+    }
+
+    std::string buildHubReport()
+    {
+        std::ostringstream out;
+        out << "--- Hub experiment ---\n";
+        if (!g_hub)
+        {
+            out << "Hub not found yet.\n";
+            return out.str();
+        }
+        out << "Town: " << g_hub->getName() << "  radius " << g_hubRadius << "\n";
+        out << "Owner: " << factionName(g_hub->getFaction())
+            << "  (was " << factionName(g_hubOriginalFaction) << ")\n";
+        out << buildingOwners();
+
+        out << "\n1. Ore override " << (g_oreOverride ? "ON" : "off") << "\n";
+        writeOreLine(out, "stone", STONE);
+        writeOreLine(out, "iron", IRON);
+        writeOreLine(out, "copper", COPPER);
+        out << "  base map reads: " << g_baseCalls << "\n";
+
+        out << "\n3. Placement, force " << (g_forcePlacement ? "ON" : "off") << "\n";
+        out << "  checks " << g_placeChecks << ", in Hub " << g_placeHubChecks
+            << ", refused in Hub " << g_placeHubRefused << "\n";
+        if (g_placeChecks)
+            out << "  last: " << (g_lastPlaceResult ? "valid" : "refused")
+                << (g_lastPlaceInHub ? " (in Hub)" : " (outside)") << "\n";
+        out << "  prospecting checks " << g_prospectChecks;
+        if (g_prospectChecks)
+            out << ", last " << (g_lastProspect ? "ok" : "zero");
+        out << "\n";
+        return out.str();
+    }
+
     std::string buildLedger()
     {
         if (!ou || !ou->player)
@@ -78,18 +333,74 @@ namespace
                 continue;
             out << c->displayName << "  -  " << currentActivity(c) << "\n";
         }
+        out << "\n" << buildHubReport();
         return out.str();
+    }
+
+    void logReport(const std::string& why)
+    {
+        DebugLog("TownLedger: [" + why + "]\n" + buildHubReport());
+    }
+
+    bool hubIsOurs()
+    {
+        return g_hub && ou && ou->player && g_hub->getFaction() == ou->player->getFaction();
     }
 
     void refresh()
     {
         if (g_text)
             g_text->setCaption(buildLedger());
+        if (g_oreButton)
+            g_oreButton->setCaption(g_oreOverride ? "Ore: ON" : "Ore: off");
+        if (g_placeButton)
+            g_placeButton->setCaption(g_forcePlacement ? "Force: ON" : "Force: off");
+        if (g_claimButton)
+            g_claimButton->setCaption(hubIsOurs() ? "Give back" : "Claim Hub");
     }
 
-    void onRefreshClick(MyGUI::WidgetPtr)
+    // ---- Buttons. Each one writes a report to the log as well.
+
+    void onLogClick(MyGUI::WidgetPtr)
     {
         refresh();
+        logReport("snapshot");
+    }
+
+    void onOreClick(MyGUI::WidgetPtr)
+    {
+        g_oreOverride = !g_oreOverride;
+        refresh();
+        logReport(g_oreOverride ? "ore override on" : "ore override off");
+    }
+
+    void onClaimClick(MyGUI::WidgetPtr)
+    {
+        if (!g_hub || !ou || !ou->player)
+            return;
+        bool ours = hubIsOurs();
+        Faction* to = ours ? g_hubOriginalFaction : ou->player->getFaction();
+        DebugLog("TownLedger: setFaction " + factionName(g_hub->getFaction()) + " -> " + factionName(to));
+        g_hub->setFaction(to, NULL);
+        refresh();
+        logReport(ours ? "gave Hub back" : "claimed Hub");
+    }
+
+    void onForceClick(MyGUI::WidgetPtr)
+    {
+        g_forcePlacement = !g_forcePlacement;
+        refresh();
+        logReport(g_forcePlacement ? "force placement on" : "force placement off");
+    }
+
+    MyGUI::Button* addButton(MyGUI::Widget* client, int slot, const char* name, void (*click)(MyGUI::WidgetPtr))
+    {
+        const float width = 0.225f, gap = 0.02f;
+        MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>(
+            "Kenshi_Button1", 0.03f + slot * (width + gap), 0.89f, width, 0.08f,
+            MyGUI::Align::Left | MyGUI::Align::Bottom, name);
+        b->eventMouseButtonClick += MyGUI::newDelegate(click);
+        return b;
     }
 
     void createWindow()
@@ -99,24 +410,23 @@ namespace
             return;
 
         g_window = gui->createWidgetReal<MyGUI::Window>(
-            "Kenshi_WindowCX", 0.62f, 0.15f, 0.33f, 0.6f,
+            "Kenshi_WindowCX", 0.58f, 0.1f, 0.38f, 0.75f,
             MyGUI::Align::Default, "Window", "TownLedgerWindow");
         g_window->setCaption("Town Ledger");
 
         MyGUI::Widget* client = g_window->getClientWidget();
         g_text = client->createWidgetReal<MyGUI::EditBox>(
-            "Kenshi_EditBox", 0.03f, 0.03f, 0.94f, 0.82f,
+            "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.85f,
             MyGUI::Align::Stretch, "TownLedgerText");
         g_text->setEditMultiLine(true);
         g_text->setEditReadOnly(true);
         g_text->setEditWordWrap(true);
         g_text->setVisibleVScroll(true);
 
-        MyGUI::Button* button = client->createWidgetReal<MyGUI::Button>(
-            "Kenshi_Button1", 0.03f, 0.88f, 0.3f, 0.09f,
-            MyGUI::Align::Left | MyGUI::Align::Bottom, "TownLedgerRefresh");
-        button->setCaption("Refresh");
-        button->eventMouseButtonClick += MyGUI::newDelegate(onRefreshClick);
+        addButton(client, 0, "TownLedgerLog", onLogClick)->setCaption("Log it");
+        g_oreButton = addButton(client, 1, "TownLedgerOre", onOreClick);
+        g_claimButton = addButton(client, 2, "TownLedgerClaim", onClaimClick);
+        g_placeButton = addButton(client, 3, "TownLedgerForce", onForceClick);
 
         g_window->setVisible(false);
     }
@@ -139,13 +449,34 @@ namespace
     {
         mainLoop_orig(thisptr, time);
 
+        ++g_frame;
+        if (g_frame % FIND_HUB_EVERY_N_FRAMES == 1)
+            updateHubCache();
+
+        // Once, after the first in-Hub ore reading, log the scale we got.
+        if (!g_loggedScale && (g_ore[STONE].hubCalls || g_ore[IRON].hubCalls || g_ore[COPPER].hubCalls))
+        {
+            g_loggedScale = true;
+            logReport("first ore reading in Hub");
+        }
+
         bool down = (GetAsyncKeyState(TOGGLE_KEY) & 0x8000) != 0;
         if (down && !g_keyWasDown && kenshiHasFocus())
             toggle();
         g_keyWasDown = down;
 
-        if (g_window && g_window->getVisible() && ++g_frame % REFRESH_EVERY_N_FRAMES == 0)
+        if (g_window && g_window->getVisible() && g_frame % REFRESH_EVERY_N_FRAMES == 0)
             refresh();
+    }
+
+    // Experiment hooks are independent: one failing doesn't stop the rest.
+    template <typename F>
+    void tryHook(const char* what, intptr_t target, F detour, F* trampoline)
+    {
+        if (KenshiLib::SUCCESS != KenshiLib::AddHook(target, detour, trampoline))
+            ErrorLog(std::string("TownLedger: could not hook ") + what);
+        else
+            DebugLog(std::string("TownLedger: hooked ") + what);
     }
 }
 
@@ -155,7 +486,19 @@ __declspec(dllexport) void startPlugin()
     if (KenshiLib::SUCCESS != KenshiLib::AddHook(
             KenshiLib::GetRealAddress(&GameWorld::_NV_mainLoop_GPUSensitiveStuff),
             mainLoop_hook, &mainLoop_orig))
+    {
         ErrorLog("TownLedger: could not hook the main loop");
-    else
-        DebugLog("TownLedger: ready, press F8 in game");
+        return;
+    }
+
+    tryHook("getResource", KenshiLib::GetRealAddress(&ZoneManager::getResource),
+            getResource_hook, &getResource_orig);
+    tryHook("getResourceBase", KenshiLib::GetRealAddress(&ZoneManager::getResourceBase),
+            getResourceBase_hook, &getResourceBase_orig);
+    tryHook("placementVerification", KenshiLib::GetRealAddress(&PreviewBuilding::_NV_placementVerification),
+            placementVerification_hook, &placementVerification_orig);
+    tryHook("checkProspectingIsNotZero", KenshiLib::GetRealAddress(&PreviewBuilding::_NV_checkProspectingIsNotZero),
+            checkProspecting_hook, &checkProspecting_orig);
+
+    DebugLog("TownLedger: ready, press F8 in game");
 }
