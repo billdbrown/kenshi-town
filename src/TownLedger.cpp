@@ -96,6 +96,7 @@ namespace
     void onRosterClick(MyGUI::WidgetPtr);     // the Town Roster, further down
     void onArrivalNowClick(MyGUI::WidgetPtr); // arrivals, further down
     void onGarrisonDueNow(MyGUI::WidgetPtr);  // the garrison contract, further down
+    void onCleanupHubNow(MyGUI::WidgetPtr);   // the Hub clean-up, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
 
@@ -1529,7 +1530,7 @@ namespace
         const float width = 0.3f, gap = 0.02f;
         int col = slot % 3, row = slot / 3;
         MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>(
-            "Kenshi_Button1", 0.03f + col * (width + gap), 0.38f + row * 0.115f, width, 0.1f,
+            "Kenshi_Button1", 0.03f + col * (width + gap), 0.38f + row * 0.098f, width, 0.085f,
             MyGUI::Align::Left | MyGUI::Align::Bottom, name);
         b->eventMouseButtonClick += MyGUI::newDelegate(click);
         return b;
@@ -1568,6 +1569,7 @@ namespace
         addButton(client, 12, "TownLedgerRoster", onRosterClick)->setCaption("Roster tab");
         addButton(client, 13, "TownLedgerArrivalNow", onArrivalNowClick)->setCaption("Arrival now");
         addButton(client, 14, "TownLedgerGarrisonDue", onGarrisonDueNow)->setCaption("Garrison due now");
+        addButton(client, 15, "TownLedgerCleanup", onCleanupHubNow)->setCaption("Clean up Hub now");
     }
 
     void showTab(size_t tab); // the main window, further down
@@ -2454,6 +2456,7 @@ namespace
         double start;     // game hour the Hub became ours
         double paidUntil; // game hour the current term ends
         bool gone;        // the garrison has left
+        bool cleaned;     // the first-claim Hub clean-up has run in this save
         int warned;       // smallest warning threshold given (48, 24, 0), NO_WARNING if none
     };
     std::map<std::string, Contract> g_contracts;
@@ -2471,10 +2474,10 @@ namespace
         FILE* f = fopen(CONTRACTS_FILE, "w");
         if (!f)
             return;
-        fprintf(f, "# Kenshi Town garrison contracts: save<TAB>start hour<TAB>paid until hour<TAB>gone\n");
+        fprintf(f, "# Kenshi Town per-save state: save<TAB>start hour<TAB>paid until hour<TAB>gone<TAB>cleaned\n");
         for (std::map<std::string, Contract>::iterator it = g_contracts.begin(); it != g_contracts.end(); ++it)
-            fprintf(f, "%s\t%f\t%f\t%d\n", it->first.c_str(), it->second.start, it->second.paidUntil,
-                    it->second.gone ? 1 : 0);
+            fprintf(f, "%s\t%f\t%f\t%d\t%d\n", it->first.c_str(), it->second.start, it->second.paidUntil,
+                    it->second.gone ? 1 : 0, it->second.cleaned ? 1 : 0);
         fclose(f);
     }
 
@@ -2491,10 +2494,10 @@ namespace
                 continue;
             char name[256];
             double start = 0, paid = 0;
-            int gone = 0;
-            if (sscanf(line, "%255[^\t]\t%lf\t%lf\t%d", name, &start, &paid, &gone) == 4)
+            int gone = 0, cleaned = 1; // saves recorded before the clean-up existed count as done
+            if (sscanf(line, "%255[^\t]\t%lf\t%lf\t%d\t%d", name, &start, &paid, &gone, &cleaned) >= 4)
             {
-                Contract c = {start, paid, gone != 0, NO_WARNING};
+                Contract c = {start, paid, gone != 0, cleaned != 0, NO_WARNING};
                 g_contracts[name] = c;
             }
         }
@@ -2545,6 +2548,77 @@ namespace
         actionLog(note.str());
     }
 
+    // ---- First-claim clean-up: the "stock" Hub a new game starts with.
+    //
+    // Building names to remove, one per line, in mods/TownLedger/hub_cleanup.txt
+    // (written with Bill's starting list if missing). Runs once per save, the
+    // first time the Hub is ours, so a fresh game gets a tidier Hub; "Clean up
+    // Hub now" on the Ledger tab runs it on demand. The Hub's buildings come
+    // from the world map, not the town record, so a data mod can't do this.
+    const char* CLEANUP_FILE = "mods\\TownLedger\\hub_cleanup.txt";
+
+    void cleanupList(std::set<std::string>& names)
+    {
+        names.clear();
+        FILE* f = fopen(CLEANUP_FILE, "r");
+        if (!f)
+        {
+            f = fopen(CLEANUP_FILE, "w");
+            if (f)
+            {
+                fprintf(f, "# Buildings removed from the Hub the first time it's claimed in a save.\n"
+                           "# One building name per line, exactly as the Buildings tab shows it.\n"
+                           "Old Storm House\nSmall Shack\n");
+                fclose(f);
+            }
+            names.insert("Old Storm House");
+            names.insert("Small Shack");
+            return;
+        }
+        char line[256];
+        while (fgets(line, sizeof(line), f))
+        {
+            std::string n(line);
+            while (!n.empty() && (n[n.size() - 1] == '\n' || n[n.size() - 1] == '\r' || n[n.size() - 1] == ' '))
+                n.erase(n.size() - 1);
+            if (!n.empty() && n[0] != '#')
+                names.insert(n);
+        }
+        fclose(f);
+    }
+
+    std::string cleanupHub()
+    {
+        std::set<std::string> names;
+        cleanupList(names);
+        std::vector<Building*> all;
+        hubBuildings(all);
+        std::map<std::string, int> removed;
+        for (size_t i = 0; i < all.size(); ++i)
+            if (names.count(all[i]->getName()))
+            {
+                ++removed[all[i]->getName()];
+                ou->dynamicDestroyBuilding(hand(all[i]));
+            }
+        std::ostringstream out;
+        out << "Hub clean-up:";
+        if (removed.empty())
+            out << " nothing on the list was there";
+        for (std::map<std::string, int>::iterator it = removed.begin(); it != removed.end(); ++it)
+            out << (it == removed.begin() ? " removed " : ", ") << it->second << " x " << it->first;
+        return out.str();
+    }
+
+    void onCleanupHubNow(MyGUI::WidgetPtr)
+    {
+        if (!g_hub || !hubIsOurs())
+        {
+            actionLog("[hub] claim the Hub first");
+            return;
+        }
+        actionLog("[hub] " + cleanupHub());
+    }
+
     // Main-loop tick: start the contract when the Hub is first ours in this
     // save, warn as it runs down, and let the garrison go when overdue.
     void contractTick()
@@ -2555,7 +2629,7 @@ namespace
         Contract* c = currentContract();
         if (!c)
         {
-            Contract fresh = {now, now + GRACE_DAYS * 24.0, false, NO_WARNING};
+            Contract fresh = {now, now + GRACE_DAYS * 24.0, false, false, NO_WARNING};
             g_contracts[saveName()] = fresh;
             saveContracts();
             std::ostringstream note;
@@ -2563,6 +2637,12 @@ namespace
                  << " days. After that they want paying (see Town).";
             actionLog(note.str());
             return;
+        }
+        if (!c->cleaned && buildingCount(g_hub) > 0)
+        {
+            c->cleaned = true;
+            saveContracts();
+            actionLog("[hub] " + cleanupHub());
         }
         if (c->gone)
             return;
