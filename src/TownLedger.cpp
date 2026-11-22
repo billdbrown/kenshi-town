@@ -53,6 +53,9 @@ namespace TaskerFields
 #include <mygui/MyGUI_EditBox.h>
 #include <mygui/MyGUI_Delegate.h>
 #include <mygui/MyGUI_ListBox.h>
+#include <mygui/MyGUI_MultiListBox.h>
+
+#include "Squads.h"
 
 #include <core/Functions.h>
 
@@ -80,6 +83,9 @@ namespace
     // No hotkeys: the HUD buttons open the windows (Kenshi's controls.cfg
     // already binds most F-keys, F8 screenshot and F9 quick load among them).
     bool g_escWasDown = false;
+    // Armed when the Hub is (re)found, i.e. after a load; see autoReapplyTick.
+    bool g_reapplyPending = false;
+    size_t g_reapplyLastCount = 0;
     void onRosterClick(MyGUI::WidgetPtr); // the Town Roster, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
@@ -249,6 +255,8 @@ namespace
         {
             g_hub = hub;
             g_hubOriginalFaction = hub ? hub->getFaction() : NULL;
+            g_reapplyPending = true; // a new Hub object means a (re)load
+            g_reapplyLastCount = 0;
             if (hub)
             {
                 DebugLog("TownLedger: found town '" + hub->getName() + "' owned by " +
@@ -1581,12 +1589,33 @@ namespace
         return best;
     }
 
-    // Give a character a profile: tag, citizenship, and the profile's jobs.
-    // Returns a short account for the status line.
+    // Squad names that mirror the roster: the retinue, plain citizens, and one
+    // squad per profile, named after it.
+    const std::string RETINUE_SQUAD = "Retinue";
+    const std::string CITIZEN_SQUAD = "Citizens";
+
+    std::string squadFor(Character* c)
+    {
+        std::string tag = nameTag(c);
+        if (tag.empty())
+            return RETINUE_SQUAD;
+        return tag == CITIZEN_TAG ? CITIZEN_SQUAD : tag;
+    }
+
+    void syncSquad(Character* c)
+    {
+        std::string moved = putInSquad(c, squadFor(c));
+        if (!moved.empty())
+            DebugLog("TownLedger: " + bareName(c) + ": " + moved);
+    }
+
+    // Give a character a profile: tag, citizenship, squad, and the profile's
+    // jobs. Returns a short account for the status line.
     std::string applyProfile(Character* c, const Profile& p)
     {
         setNameTag(c, p.name);
         g_citizens.insert(c);
+        syncSquad(c);
         c->clearPermajobs();
         int added = 0, missing = 0;
         for (size_t j = 0; j < p.jobs.size(); ++j)
@@ -1608,12 +1637,63 @@ namespace
         return out.str();
     }
 
+    // Every citizen with a profile gets its jobs again, and everyone goes to
+    // their squad. Returns the account, or "" if there was nobody to do.
+    std::string reapplyAll()
+    {
+        std::ostringstream note;
+        int n = 0;
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+        {
+            Profile* p = findProfile(nameTag(*it));
+            if (!p)
+                continue;
+            note << "\n  " << applyProfile(*it, *p);
+            ++n;
+        }
+        if (ou && ou->player)
+        {
+            const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+            for (uint32_t i = 0; i < people.size(); ++i)
+                if (people[i])
+                    syncSquad(people[i]);
+        }
+        return n ? note.str() : "";
+    }
+
+    // After a load, reapply once the Hub's buildings have finished loading:
+    // jobs point at buildings, which can be rebuilt or moved between sessions.
+    // Armed when the Hub is (re)found; fires when its building count has held
+    // steady for one check.
+
+    void autoReapplyTick()
+    {
+        if (!g_reapplyPending || !g_hub)
+            return;
+        size_t n = buildingCount(g_hub);
+        if (n == 0 || n != g_reapplyLastCount)
+        {
+            g_reapplyLastCount = n;
+            return;
+        }
+        g_reapplyPending = false;
+        std::string done = reapplyAll();
+        actionLog("[roster] after load:" + (done.empty() ? std::string(" nobody has a profile") : done));
+    }
+
     // ---- The window.
+    //
+    //   Profiles            | People: Name | Profile | Doing
+    //   [selected's jobs]   | "Assign: Double -> Miner"
+    //   [name] Capture Del  | Assign | Reapply jobs
+    //   status line
 
     MyGUI::Window* g_roster = NULL;
     MyGUI::ListBox* g_rosterProfiles = NULL;
-    MyGUI::ListBox* g_rosterPeople = NULL;
+    MyGUI::MultiListBox* g_rosterPeople = NULL;
+    MyGUI::EditBox* g_rosterJobs = NULL;
     MyGUI::EditBox* g_rosterName = NULL;
+    MyGUI::EditBox* g_rosterPick = NULL;
     MyGUI::EditBox* g_rosterStatus = NULL;
     std::vector<Character*> g_rosterPeopleRows;
     std::vector<std::string> g_rosterProfileRows, g_rosterPeopleText;
@@ -1636,18 +1716,91 @@ namespace
         shown = rows;
     }
 
+    // Same for the people table; each row is three cells joined by tabs.
+    void fillTable(MyGUI::MultiListBox* list, std::vector<std::string>& shown, const std::vector<std::string>& rows)
+    {
+        if (rows == shown)
+            return;
+        size_t sel = list->getIndexSelected();
+        list->removeAllItems();
+        for (size_t i = 0; i < rows.size(); ++i)
+        {
+            std::vector<std::string> cells;
+            size_t start = 0, tab;
+            while ((tab = rows[i].find('\t', start)) != std::string::npos)
+            {
+                cells.push_back(rows[i].substr(start, tab - start));
+                start = tab + 1;
+            }
+            cells.push_back(rows[i].substr(start));
+            list->addItem(cells[0]);
+            for (size_t c = 1; c < cells.size() && c < 3; ++c)
+                list->setSubItemNameAt(c, i, cells[c]);
+        }
+        if (sel != MyGUI::ITEM_NONE && sel < rows.size())
+            list->setIndexSelected(sel);
+        shown = rows;
+    }
+
+    std::string profileRowName(size_t row)
+    {
+        if (row == ROW_RETINUE)
+            return "Retinue";
+        if (row == ROW_CITIZEN)
+            return "Citizen, no job";
+        if (row != MyGUI::ITEM_NONE && row - FIRST_PROFILE_ROW < g_profiles.size())
+            return g_profiles[row - FIRST_PROFILE_ROW].name;
+        return "";
+    }
+
+    Character* rosterSelectedPerson()
+    {
+        size_t i = g_rosterPeople->getIndexSelected();
+        return (i != MyGUI::ITEM_NONE && i < g_rosterPeopleRows.size()) ? g_rosterPeopleRows[i] : NULL;
+    }
+
+    // The two lines that follow the selections: the selected profile's jobs,
+    // and what Assign would do.
+    void refreshRosterPicks()
+    {
+        size_t row = g_rosterProfiles->getIndexSelected();
+        std::ostringstream jobs;
+        if (row == ROW_RETINUE)
+            jobs << "Yours to control directly. Jobs are left as they are.";
+        else if (row == ROW_CITIZEN)
+            jobs << "A citizen with no standing jobs.";
+        else if (row != MyGUI::ITEM_NONE && row - FIRST_PROFILE_ROW < g_profiles.size())
+        {
+            const Profile& p = g_profiles[row - FIRST_PROFILE_ROW];
+            for (size_t j = 0; j < p.jobs.size(); ++j)
+                jobs << (j ? "\n" : "") << p.jobs[j].label
+                     << (p.jobs[j].building.empty() ? "" : " -> " + p.jobs[j].building);
+            if (p.jobs.empty())
+                jobs << "No jobs.";
+        }
+        else
+            jobs << "Pick a profile.";
+        g_rosterJobs->setCaption(jobs.str());
+
+        Character* c = rosterSelectedPerson();
+        std::string target = profileRowName(row);
+        std::string pick = "Assign: " + (c ? bareName(c) : std::string("(pick a person)")) + "  ->  " +
+                           (target.empty() ? std::string("(pick a profile)") : target);
+        g_rosterPick->setCaption(pick);
+    }
+
     void refreshRoster()
     {
         if (!g_roster || !g_roster->getVisible() || !ou || !ou->player)
             return;
 
         std::vector<std::string> profileRows;
-        profileRows.push_back("(retinue: you control them)");
-        profileRows.push_back("(citizen, no job)");
+        profileRows.push_back("Retinue (you control them)");
+        profileRows.push_back("Citizen, no job");
         for (size_t i = 0; i < g_profiles.size(); ++i)
         {
             std::ostringstream row;
-            row << g_profiles[i].name << "  -  " << g_profiles[i].jobs.size() << " jobs";
+            row << g_profiles[i].name << "  (" << g_profiles[i].jobs.size() << " jobs)";
             profileRows.push_back(row.str());
         }
         fillList(g_rosterProfiles, g_rosterProfileRows, profileRows);
@@ -1661,20 +1814,23 @@ namespace
             if (!c)
                 continue;
             std::string tag = nameTag(c);
-            std::ostringstream row;
-            row << bareName(c) << "  -  " << (tag.empty() ? "retinue" : tag) << "  -  " << currentActivity(c);
-            peopleRows.push_back(row.str());
+            peopleRows.push_back(bareName(c) + "\t" + (tag.empty() ? "Retinue" : tag) + "\t" + currentActivity(c));
             g_rosterPeopleRows.push_back(c);
         }
-        fillList(g_rosterPeople, g_rosterPeopleText, peopleRows);
+        fillTable(g_rosterPeople, g_rosterPeopleText, peopleRows);
 
+        refreshRosterPicks();
         g_rosterStatus->setCaption(g_lastAction);
     }
 
-    Character* rosterSelectedPerson()
+    void onRosterProfilePicked(MyGUI::ListBox*, size_t)
     {
-        size_t i = g_rosterPeople->getIndexSelected();
-        return (i != MyGUI::ITEM_NONE && i < g_rosterPeopleRows.size()) ? g_rosterPeopleRows[i] : NULL;
+        refreshRosterPicks();
+    }
+
+    void onRosterPersonPicked(MyGUI::MultiListBox*, size_t)
+    {
+        refreshRosterPicks();
     }
 
     void onRosterNewProfile(MyGUI::WidgetPtr)
@@ -1683,13 +1839,13 @@ namespace
         selectedCharacters(chars);
         if (chars.empty() || chars[0]->getPermajobCount() == 0)
         {
-            actionLog("[roster] select a character whose jobs you've set up, then New from selected");
+            actionLog("[roster] select a character whose jobs you've set up, type a name, then Capture");
             refreshRoster();
             return;
         }
         Character* c = chars[0];
         std::string name = fileSafe(g_rosterName->getOnlyText().asUTF8());
-        if (name.empty() || name == CITIZEN_TAG)
+        if (name.empty() || name == CITIZEN_TAG || name == RETINUE_SQUAD || name == CITIZEN_SQUAD)
         {
             std::ostringstream n;
             n << "Profile " << g_profiles.size() + 1;
@@ -1725,7 +1881,7 @@ namespace
         size_t row = g_rosterProfiles->getIndexSelected();
         if (row == MyGUI::ITEM_NONE || row < FIRST_PROFILE_ROW || row - FIRST_PROFILE_ROW >= g_profiles.size())
         {
-            actionLog("[roster] pick a profile (not retinue or citizen) to delete");
+            actionLog("[roster] pick a profile (not Retinue or Citizen) to delete");
             refreshRoster();
             return;
         }
@@ -1734,7 +1890,10 @@ namespace
         // Its people keep their jobs but go back to plain citizens.
         for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
             if (nameTag(*it) == name)
+            {
                 setNameTag(*it, CITIZEN_TAG);
+                syncSquad(*it);
+            }
         saveProfiles();
         actionLog("[roster] deleted profile " + name);
         refreshRoster();
@@ -1754,12 +1913,14 @@ namespace
         {
             setNameTag(c, "");
             g_citizens.erase(c);
+            syncSquad(c);
             actionLog("[roster] " + bareName(c) + " -> retinue (yours to control)");
         }
         else if (row == ROW_CITIZEN)
         {
             setNameTag(c, CITIZEN_TAG);
             g_citizens.insert(c);
+            syncSquad(c);
             c->clearPermajobs();
             ou->player->objectSelected(c, false);
             actionLog("[roster] " + bareName(c) + " -> citizen, no job");
@@ -1772,24 +1933,10 @@ namespace
         refreshRoster();
     }
 
-    // Re-give every citizen their profile's jobs: after a reload, or after
-    // buildings were rebuilt or moved.
     void onRosterReapply(MyGUI::WidgetPtr)
     {
-        int n = 0;
-        std::ostringstream note;
-        note << "[roster] reapplied:";
-        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
-        {
-            Profile* p = findProfile(nameTag(*it));
-            if (!p)
-                continue;
-            note << "\n  " << applyProfile(*it, *p);
-            ++n;
-        }
-        if (!n)
-            note << " nobody has a profile";
-        actionLog(note.str());
+        std::string done = reapplyAll();
+        actionLog("[roster] reapplied:" + (done.empty() ? std::string(" nobody has a profile") : done));
         refreshRoster();
     }
 
@@ -1802,11 +1949,21 @@ namespace
     MyGUI::Button* rosterButton(MyGUI::Widget* client, float x, float y, float w, const char* name,
                                 const char* caption, void (*click)(MyGUI::WidgetPtr))
     {
-        MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>("Kenshi_Button1", x, y, w, 0.08f,
+        MyGUI::Button* b = client->createWidgetReal<MyGUI::Button>("Kenshi_Button1", x, y, w, 0.075f,
                                                                    MyGUI::Align::Default, name);
         b->setCaption(caption);
         b->eventMouseButtonClick += MyGUI::newDelegate(click);
         return b;
+    }
+
+    MyGUI::EditBox* rosterText(MyGUI::Widget* client, float x, float y, float w, float h, const char* name)
+    {
+        MyGUI::EditBox* e = client->createWidgetReal<MyGUI::EditBox>("Kenshi_EditBox", x, y, w, h,
+                                                                     MyGUI::Align::Default, name);
+        e->setEditMultiLine(true);
+        e->setEditReadOnly(true);
+        e->setEditWordWrap(true);
+        return e;
     }
 
     void createRoster()
@@ -1820,26 +1977,30 @@ namespace
         g_roster->eventWindowButtonPressed += MyGUI::newDelegate(onRosterWindowButton);
         MyGUI::Widget* client = g_roster->getClientWidget();
 
-        // Left: profiles. Right: people. Pick one of each, then Assign.
-        g_rosterProfiles = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.02f, 0.02f, 0.40f, 0.58f,
+        // Left column: profiles, the selected one's jobs, and making profiles.
+        g_rosterProfiles = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.02f, 0.02f, 0.36f, 0.40f,
                                                                     MyGUI::Align::Default, "TownRosterProfiles");
-        g_rosterPeople = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.44f, 0.02f, 0.54f, 0.58f,
-                                                                  MyGUI::Align::Default, "TownRosterPeople");
-
-        g_rosterName = client->createWidgetReal<MyGUI::EditBox>("Kenshi_EditBox", 0.02f, 0.62f, 0.40f, 0.08f,
+        g_rosterProfiles->eventListChangePosition += MyGUI::newDelegate(onRosterProfilePicked);
+        g_rosterJobs = rosterText(client, 0.02f, 0.44f, 0.36f, 0.24f, "TownRosterJobs");
+        g_rosterName = client->createWidgetReal<MyGUI::EditBox>("Kenshi_EditBox", 0.02f, 0.70f, 0.36f, 0.075f,
                                                                 MyGUI::Align::Default, "TownRosterName");
         g_rosterName->setCaption("Miner");
+        rosterButton(client, 0.02f, 0.785f, 0.175f, "TownRosterNew", "Capture", onRosterNewProfile);
+        rosterButton(client, 0.205f, 0.785f, 0.175f, "TownRosterDelete", "Delete", onRosterDeleteProfile);
 
-        rosterButton(client, 0.02f, 0.72f, 0.195f, "TownRosterNew", "New from selected", onRosterNewProfile);
-        rosterButton(client, 0.225f, 0.72f, 0.195f, "TownRosterDelete", "Delete profile", onRosterDeleteProfile);
-        rosterButton(client, 0.44f, 0.62f, 0.265f, "TownRosterAssign", "Assign", onRosterAssign);
-        rosterButton(client, 0.715f, 0.62f, 0.265f, "TownRosterReapply", "Reapply jobs", onRosterReapply);
+        // Right column: people as a table, what Assign will do, and actions.
+        g_rosterPeople = client->createWidgetReal<MyGUI::MultiListBox>(
+            "Kenshi_MultiListBox", 0.40f, 0.02f, 0.58f, 0.66f, MyGUI::Align::Default, "TownRosterPeople");
+        int w = g_rosterPeople->getWidth();
+        g_rosterPeople->addColumn("Name", w * 30 / 100);
+        g_rosterPeople->addColumn("Profile", w * 25 / 100);
+        g_rosterPeople->addColumn("Doing", w * 45 / 100 - 4);
+        g_rosterPeople->eventListChangePosition += MyGUI::newDelegate(onRosterPersonPicked);
+        g_rosterPick = rosterText(client, 0.40f, 0.70f, 0.58f, 0.075f, "TownRosterPick");
+        rosterButton(client, 0.40f, 0.785f, 0.285f, "TownRosterAssign", "Assign", onRosterAssign);
+        rosterButton(client, 0.695f, 0.785f, 0.285f, "TownRosterReapply", "Reapply jobs", onRosterReapply);
 
-        g_rosterStatus = client->createWidgetReal<MyGUI::EditBox>("Kenshi_EditBox", 0.02f, 0.82f, 0.96f, 0.16f,
-                                                                  MyGUI::Align::Default, "TownRosterStatus");
-        g_rosterStatus->setEditMultiLine(true);
-        g_rosterStatus->setEditReadOnly(true);
-        g_rosterStatus->setEditWordWrap(true);
+        g_rosterStatus = rosterText(client, 0.02f, 0.88f, 0.96f, 0.10f, "TownRosterStatus");
 
         g_roster->setVisible(false);
     }
@@ -1912,6 +2073,7 @@ namespace
         {
             updateHubCache();
             rebuildCitizensFromNames();
+            autoReapplyTick();
             if (g_devFast)
                 applyDevSpeed();
         }
