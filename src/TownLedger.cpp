@@ -154,7 +154,8 @@ namespace
             size_t n = buildingCount(t);
             bool active = t->isActive();
             bool exact = t->getName() == "The Hub";
-            int score = (exact ? 1000000 : 0) + (active ? 100000 : 0) + int(n);
+            // By building count, not "active": which part is active flips with ownership.
+            int score = (exact ? 1000000 : 0) + int(n);
             Ogre::Vector3 p = t->getPosition();
             seen << "\n  " << t->getName() << " | " << factionName(t->getFaction()) << " | "
                  << n << " buildings | " << (active ? "active" : "inactive") << " | at "
@@ -211,21 +212,42 @@ namespace
         return best;
     }
 
-    // Keep every twin owned by whoever owns the Hub, so a check that lands on
-    // the twin sees the same owner. Runs from the main loop and after Claim.
+    // The Hub is two town objects at one spot, and they are one town to us:
+    // the original town's buildings in one, the buildings the player put up in
+    // the other, and which of them Kenshi calls "active" flips with ownership.
+    bool hubPartIsOurs(TownBase* t)
+    {
+        return t && ou && ou->player && t->getFaction() == ou->player->getFaction();
+    }
+
+    void setHubOwner(Faction* owner)
+    {
+        if (!g_hub || !owner)
+            return;
+        if (g_hub->getFaction() != owner)
+            g_hub->setFaction(owner, NULL);
+        for (size_t i = 0; i < g_hubTwins.size(); ++i)
+            if (g_hubTwins[i]->getFaction() != owner)
+            {
+                DebugLog("TownLedger: twin Hub " + factionName(g_hubTwins[i]->getFaction()) + " -> " +
+                         factionName(owner));
+                g_hubTwins[i]->setFaction(owner, NULL);
+            }
+    }
+
+    // Heal a half-claimed Hub, only ever towards the player: if any part is
+    // ours, all of it is. (Syncing from whichever part loaded first once
+    // handed a saved claim back to the Outlaws on load.) Give back sets the
+    // owner explicitly with setHubOwner.
     void syncHubTwins()
     {
-        if (!g_hub)
+        if (!g_hub || !ou || !ou->player)
             return;
-        Faction* owner = g_hub->getFaction();
-        for (size_t i = 0; i < g_hubTwins.size(); ++i)
-        {
-            TownBase* t = g_hubTwins[i];
-            if (t->getFaction() == owner)
-                continue;
-            DebugLog("TownLedger: twin Hub " + factionName(t->getFaction()) + " -> " + factionName(owner));
-            t->setFaction(owner, NULL);
-        }
+        bool anyOurs = hubPartIsOurs(g_hub);
+        for (size_t i = 0; i < g_hubTwins.size() && !anyOurs; ++i)
+            anyOurs = hubPartIsOurs(g_hubTwins[i]);
+        if (anyOurs)
+            setHubOwner(ou->player->getFaction());
     }
 
     // The Hub's vanilla owner. Looked up by stringId so Give back works even
@@ -1082,19 +1104,25 @@ namespace
 
     // ---- The Hub's buildings.
 
+    // Every building in the Hub: both town objects (see setHubOwner).
     void hubBuildings(std::vector<Building*>& out)
     {
         out.clear();
         if (!g_hub)
             return;
-        TownBuildingsManager* mgr = g_hub->getBuildingsManager();
-        if (!mgr)
-            return;
-        for (ogre_unordered_map<Building*, TownBuildingsManager::BuildingInfo>::type::iterator it =
-                 mgr->buildingEntities.begin();
-             it != mgr->buildingEntities.end(); ++it)
-            if (it->first)
-                out.push_back(it->first);
+        std::vector<TownBase*> parts(1, g_hub);
+        parts.insert(parts.end(), g_hubTwins.begin(), g_hubTwins.end());
+        for (size_t p = 0; p < parts.size(); ++p)
+        {
+            TownBuildingsManager* mgr = parts[p]->getBuildingsManager();
+            if (!mgr)
+                continue;
+            for (ogre_unordered_map<Building*, TownBuildingsManager::BuildingInfo>::type::iterator it =
+                     mgr->buildingEntities.begin();
+                 it != mgr->buildingEntities.end(); ++it)
+                if (it->first)
+                    out.push_back(it->first);
+        }
     }
 
     // Who owned each building before we claimed it, so Give back can undo it.
@@ -1236,7 +1264,12 @@ namespace
 
     bool hubIsOurs()
     {
-        return g_hub && ou && ou->player && g_hub->getFaction() == ou->player->getFaction();
+        if (hubPartIsOurs(g_hub))
+            return true;
+        for (size_t i = 0; i < g_hubTwins.size(); ++i)
+            if (hubPartIsOurs(g_hubTwins[i]))
+                return true;
+        return false;
     }
 
     void refresh()
@@ -1266,9 +1299,10 @@ namespace
         bool ours = hubIsOurs();
         Faction* mine = ou->player->getFaction();
         Faction* to = ours ? g_hubOriginalFaction : mine;
+        if (ours && !to)
+            to = hubVanillaOwner();
         DebugLog("TownLedger: setFaction " + factionName(g_hub->getFaction()) + " -> " + factionName(to));
-        g_hub->setFaction(to, NULL);
-        syncHubTwins();
+        setHubOwner(to);
 
         // The town's own faction doesn't move its buildings; hand them over
         // one by one (and back again).
