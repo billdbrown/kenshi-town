@@ -3501,9 +3501,11 @@ namespace
         }
     }
 
-    // The Town button sits directly above Kenshi's Money / Day box (bottom
-    // right); the tray stacks upwards from just above it.
-    const float HUD_X = 0.851f, HUD_Y = 0.712f, HUD_W = 0.10f, HUD_H = 0.035f;
+    // The Town button sits above Kenshi's speed buttons, just left of the
+    // Money / Day box. Directly above that box is where Kenshi opens its
+    // building inspector (name, research, power, battery), so anything there
+    // gets covered. The tray stacks upwards from just above the button.
+    const float HUD_X = 0.751f, HUD_Y = 0.712f, HUD_W = 0.10f, HUD_H = 0.035f;
 
     // ==== Notification tray ===================================================
     //
