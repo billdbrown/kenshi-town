@@ -2937,13 +2937,215 @@ namespace
             showTab(g_tabs ? g_tabs->getIndexSelected() : 0);
     }
 
+    // The Town button sits directly above Kenshi's Money / Day box (bottom
+    // right); the tray stacks upwards from just above it.
+    const float HUD_X = 0.851f, HUD_Y = 0.712f, HUD_W = 0.10f, HUD_H = 0.035f;
+
+    // ==== Notification tray ===================================================
+    //
+    // A short stack of clickable lines above the Town button: what needs
+    // attention right now, most urgent first. Recomputed every couple of
+    // seconds; an issue disappears when it's dealt with. Clicking a line moves
+    // the camera to what it's about, or opens the tab that deals with it.
+
+    struct Notice
+    {
+        int priority;      // lower first
+        std::string text;
+        int tab;           // tab to open, or -1
+        bool hasPlace;
+        Ogre::Vector3 place; // where to point the camera
+    };
+    std::vector<Notice> g_notices;
+    const size_t TRAY_LINES = 5;
+    MyGUI::Button* g_trayLines[TRAY_LINES + 1] = {NULL, NULL, NULL, NULL, NULL, NULL};
+
+    bool noticeOrder(const Notice& a, const Notice& b)
+    {
+        return a.priority < b.priority;
+    }
+
+    Notice notice(int priority, const std::string& text, int tab)
+    {
+        Notice n;
+        n.priority = priority;
+        n.text = text;
+        n.tab = tab;
+        n.hasPlace = false;
+        return n;
+    }
+
+    // 90% or more of a building's inventory slots taken. Equipment sections
+    // (a character's, not a building's) are skipped.
+    bool buildingIsFull(Building* b)
+    {
+        Inventory* inv = b->getInventory();
+        if (!inv)
+            return false;
+        lektor<InventorySection*>& sections = inv->getAllSections();
+        int cells = 0, used = 0;
+        for (uint32_t s = 0; s < sections.size(); ++s)
+        {
+            InventorySection* sec = sections[s];
+            if (!sec || sec->isAnEquippedItemSection || sec->width <= 0 || sec->height <= 0)
+                continue;
+            cells += sec->width * sec->height;
+            const Ogre::vector<InventorySection::SectionItem>::type& items = sec->getItems();
+            for (size_t k = 0; k < items.size(); ++k)
+                used += int(items[k].w) * int(items[k].h);
+        }
+        return cells > 0 && used * 10 >= cells * 9;
+    }
+
+    std::string plural(int n, const char* one, const char* many)
+    {
+        std::ostringstream out;
+        out << n << " " << (n == 1 ? one : many);
+        return out.str();
+    }
+
+    void computeNotices()
+    {
+        g_notices.clear();
+        if (!ou || !ou->player || !g_hub || !hubIsOurs())
+            return;
+        Faction* mine = ou->player->getFaction();
+
+        // Beds and full buildings, from the Hub's buildings.
+        std::vector<Building*> all;
+        hubBuildings(all);
+        int beds = 0;
+        std::map<std::string, std::vector<Building*> > full;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            Building* b = all[i];
+            if (b->getFaction() != mine || b->isDestroyed())
+                continue;
+            BuildingFunction f = b->getSpecialFunction();
+            if (f == BF_BED)
+                ++beds;
+            if (f != BF_BED && buildingIsFull(b))
+                full[b->getName()].push_back(b);
+        }
+
+        // People: idle, no job.
+        const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+        int population = 0, idle = 0, noJob = 0;
+        for (uint32_t i = 0; i < people.size(); ++i)
+        {
+            Character* c = people[i];
+            if (!c || c->isDead())
+                continue;
+            ++population;
+            std::string tag = nameTag(c);
+            if (tag.empty())
+                continue; // the retinue is the player's business
+            if (tag == CITIZEN_TAG)
+                ++noJob;
+            std::string doing = currentActivity(c);
+            if (doing == "idle" || doing.find("Sitting") != std::string::npos ||
+                doing.find("Idle") != std::string::npos)
+                ++idle;
+        }
+
+        if (population > beds)
+            g_notices.push_back(notice(2, plural(population - beds, "person has", "people have") + " no bed", 2));
+        for (std::map<std::string, std::vector<Building*> >::iterator it = full.begin(); it != full.end(); ++it)
+        {
+            std::ostringstream t;
+            if (it->second.size() == 1)
+                t << it->first << " is full";
+            else
+                t << it->second.size() << " x " << it->first << " are full";
+            Notice n = notice(3, t.str(), -1);
+            n.hasPlace = true;
+            n.place = it->second[0]->getPosition();
+            g_notices.push_back(n);
+        }
+        if (noJob)
+            g_notices.push_back(notice(4, plural(noJob, "citizen has", "citizens have") + " no job", 1));
+        if (idle)
+            g_notices.push_back(notice(5, plural(idle, "citizen", "citizens") + " idle", 1));
+        if (!g_gate.empty())
+            g_notices.push_back(notice(1, plural(int(g_gate.size()), "drifter", "drifters") + " at the gate", 1));
+
+        // The garrison contract.
+        Contract* c = currentContract();
+        if (c && !c->gone)
+        {
+            double left = c->paidUntil - gameHours();
+            if (left <= 0)
+                g_notices.push_back(notice(0, "Garrison payment due: they leave in a day", 0));
+            else if (left <= 48)
+            {
+                std::ostringstream t;
+                t << "Garrison wants paying in " << int(left / 24.0 + 0.5) << (left > 36 ? " days" : " day");
+                g_notices.push_back(notice(2, t.str(), 0));
+            }
+        }
+
+        std::stable_sort(g_notices.begin(), g_notices.end(), noticeOrder);
+    }
+
+    void onTrayClick(MyGUI::WidgetPtr w)
+    {
+        for (size_t i = 0; i < TRAY_LINES && i < g_notices.size(); ++i)
+        {
+            if (g_trayLines[i] != w)
+                continue;
+            const Notice& n = g_notices[i];
+            if (n.hasPlace && ou && ou->player)
+                ou->player->focusCamera(n.place);
+            if (n.tab >= 0 && !(g_main && g_main->getVisible() && g_tabs->getIndexSelected() == size_t(n.tab)))
+                showTab(size_t(n.tab));
+            return;
+        }
+        if (w == g_trayLines[TRAY_LINES])
+            showTab(0);
+    }
+
+    void updateTray(bool inGame)
+    {
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        if (!gui)
+            return;
+        if (!g_trayLines[0])
+        {
+            // Stacked upwards from just above the Town button.
+            for (size_t i = 0; i <= TRAY_LINES; ++i)
+            {
+                std::ostringstream name;
+                name << "KenshiTownTray" << i;
+                float y = HUD_Y - (i + 1) * (HUD_H + 0.004f);
+                g_trayLines[i] = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", HUD_X - 0.05f, y,
+                                                                      HUD_W + 0.05f, HUD_H, MyGUI::Align::Default,
+                                                                      "Main", name.str());
+                g_trayLines[i]->eventMouseButtonClick += MyGUI::newDelegate(onTrayClick);
+            }
+        }
+        if (inGame)
+            computeNotices();
+        for (size_t i = 0; i < TRAY_LINES; ++i)
+        {
+            bool show = inGame && i < g_notices.size();
+            g_trayLines[i]->setVisible(show);
+            if (show)
+                g_trayLines[i]->setCaption(g_notices[i].text);
+        }
+        bool more = inGame && g_notices.size() > TRAY_LINES;
+        g_trayLines[TRAY_LINES]->setVisible(more);
+        if (more)
+        {
+            std::ostringstream t;
+            t << "+" << g_notices.size() - TRAY_LINES << " more";
+            g_trayLines[TRAY_LINES]->setCaption(t.str());
+        }
+    }
+
     // ---- HUD: one Town button, always on screen while a game is loaded.
 
     MyGUI::Button* g_hudTown = NULL;
 
-    // Bottom of the screen with Kenshi's own HUD. Position is a guess at a gap
-    // in the bottom bar; adjust HUD_X / HUD_Y if it sits on something.
-    const float HUD_X = 0.851f, HUD_Y = 0.712f, HUD_W = 0.10f, HUD_H = 0.035f; // above Money / Day
 
     MyGUI::Button* hudButton(float y, const char* name, const char* caption, void (*click)(MyGUI::WidgetPtr))
     {
@@ -2960,6 +3162,7 @@ namespace
         bool inGame = ou && ou->player && ou->player->getAllPlayerCharacters().size() > 0;
         if (!g_hudTown && inGame && MyGUI::Gui::getInstancePtr())
             g_hudTown = hudButton(HUD_Y, "KenshiTownHud", "Town", onTownClick);
+        updateTray(inGame);
         if (g_hudTown)
         {
             g_hudTown->setVisible(inGame);
