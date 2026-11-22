@@ -139,10 +139,29 @@ namespace
                 bestScore = score;
             }
         }
+        // Every town near the chosen Hub, whatever it's called: claimed
+        // buildings may have been regrouped into a player town on reload.
+        if (best)
+        {
+            Ogre::Vector3 c = best->getPosition();
+            for (uint32_t i = 0; i < towns.size(); ++i)
+            {
+                TownBase* t = static_cast<TownBase*>(towns[i]);
+                if (!t || t == best || t->getName().find("Hub") != std::string::npos)
+                    continue;
+                Ogre::Vector3 p = t->getPosition();
+                float dx = p.x - c.x, dz = p.z - c.z;
+                if (dx * dx + dz * dz > 5000.0f * 5000.0f)
+                    continue;
+                seen << "\n  nearby: " << t->getName() << " | " << factionName(t->getFaction()) << " | "
+                     << buildingCount(t) << " buildings | " << (t->isActive() ? "active" : "inactive")
+                     << " | at " << int(p.x) << "," << int(p.z) << " | radius " << t->getRadius();
+            }
+        }
         if (seen.str() != g_hubCandidatesSeen)
         {
             g_hubCandidatesSeen = seen.str();
-            DebugLog("TownLedger: towns named like the Hub:" + g_hubCandidatesSeen);
+            DebugLog("TownLedger: towns at the Hub:" + g_hubCandidatesSeen);
         }
         return best;
     }
@@ -1015,6 +1034,13 @@ namespace
 
         const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
         std::ostringstream out;
+        // The box is small: the Hub's state first, details below the fold.
+        if (g_hub)
+            out << "Hub: " << factionName(g_hub->getFaction()) << ", " << buildingCount(g_hub)
+                << " buildings" << (hubIsOurs() ? " (ours)" : "") << "\nBuild fixes: " << g_whichTownFixed
+                << " of " << g_whichTownCalls << " previews\n";
+        else
+            out << "Hub not found\n";
         out << "Population: " << people.size() << "\n\n";
         for (uint32_t i = 0; i < people.size(); ++i)
         {
