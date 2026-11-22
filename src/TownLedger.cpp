@@ -223,6 +223,21 @@ namespace
         return t && ou && ou->player && t->getFaction() == ou->player->getFaction();
     }
 
+    // The player's base: the Hub part holding the buildings the player put up,
+    // where Kenshi's builders look for work. The original town is the bigger
+    // part, chosen as g_hub; the base is its twin (or the Hub itself if alone).
+    TownBase* hubBase()
+    {
+        return g_hubTwins.empty() ? g_hub : g_hubTwins[0];
+    }
+
+    // How finished a building is: 1 when standing, below 1 while unfinished.
+    float buildProgress(Building* b)
+    {
+        Building::ConstructionState* st = b->getBuildState();
+        return st ? st->constructionProgress : 1.0f;
+    }
+
     void setHubOwner(Faction* owner)
     {
         if (!g_hub || !owner)
@@ -2737,7 +2752,7 @@ namespace
         std::vector<std::pair<float, Building*> > order;
         for (size_t i = 0; i < all.size(); ++i)
         {
-            if (g_bRuinsOnly && !all[i]->isDestroyed())
+            if (g_bRuinsOnly && !all[i]->isDestroyed() && buildProgress(all[i]) >= 1.0f)
                 continue;
             Ogre::Vector3 p = all[i]->getPosition();
             float dx = p.x - eye.x, dz = p.z - eye.z;
@@ -2750,16 +2765,24 @@ namespace
         {
             Building* b = order[i].second;
             std::ostringstream row;
-            row << b->getName() << "\t" << (b->isDestroyed() ? "ruin" : "standing") << "\t"
-                << factionName(b->getFaction()) << "\t" << int(sqrt(order[i].first) / 10.0f) << " m";
+            float built = buildProgress(b);
+            row << b->getName() << "\t";
+            if (b->isDestroyed())
+                row << "ruin";
+            else if (built < 1.0f)
+                row << "unfinished " << int(built * 100.0f) << "%";
+            else
+                row << "standing";
+            row << "\t" << (b->getTown() == hubBase() ? "base" : "old Hub") << "\t" << factionName(b->getFaction())
+                << "\t" << int(sqrt(order[i].first) / 10.0f) << " m";
             rows.push_back(row.str());
             g_bRows.push_back(b);
         }
         if (rows.empty())
-            rows.push_back(g_bRuinsOnly ? "No ruins in the Hub.\t\t\t" : "No buildings.\t\t\t");
+            rows.push_back(g_bRuinsOnly ? "No ruins or unfinished buildings.\t\t\t\t" : "No buildings.\t\t\t\t");
         fillTable(g_bList, g_bShown, rows);
         if (g_bRuinsButton)
-            g_bRuinsButton->setCaption(g_bRuinsOnly ? "Showing: ruins" : "Showing: everything");
+            g_bRuinsButton->setCaption(g_bRuinsOnly ? "Showing: ruins, unfinished" : "Showing: everything");
     }
 
     Building* buildingPicked()
@@ -2798,6 +2821,26 @@ namespace
         return out.str();
     }
 
+    // Kenshi's builders only take construction work in the player's base,
+    // which is the Hub part that holds the buildings the player put up; the
+    // original Hub's buildings sit in the other part, so a repaired gate there
+    // was never built (Bill, 2026-11-22: they build anything but the gate).
+    // Building::_changeTown moves one building across.
+    std::string moveIntoBase(Building* b)
+    {
+        TownBase* base = hubBase();
+        if (!base || !base->isTown())
+            return "no base part to move into";
+        if (b->getTown() == base)
+            return "already in the base";
+        size_t before = buildingCount(base);
+        b->_changeTown(base->isTown());
+        std::ostringstream out;
+        out << (b->getTown() == base ? "moved into the base" : "move did NOT take") << " (base had " << before
+            << " buildings, now " << buildingCount(base) << ")";
+        return out.str();
+    }
+
     void repairPicked(bool instantly)
     {
         Building* b = buildingPicked();
@@ -2813,8 +2856,22 @@ namespace
         }
         b->setDestroyed(false);
         b->setConstructionProgress(instantly ? 1.0f : 0.0f);
+        std::string moved = moveIntoBase(b);
         actionLog("[buildings] repair " + std::string(instantly ? "now" : "ordered") + ": " + b->getName() + ": " +
-                  describeRepairState(b) + (instantly ? "" : " (needs builders and materials)"));
+                  describeRepairState(b) + "; " + moved + (instantly ? "" : " (needs builders and materials)"));
+        g_bShown.clear();
+        refreshBuildings();
+    }
+
+    void onBuildingMoveToBase(MyGUI::WidgetPtr)
+    {
+        Building* b = buildingPicked();
+        if (!b)
+        {
+            actionLog("[buildings] pick a building in the list first");
+            return;
+        }
+        actionLog("[buildings] " + b->getName() + ": " + moveIntoBase(b));
         g_bShown.clear();
         refreshBuildings();
     }
@@ -2853,20 +2910,23 @@ namespace
 
     void createBuildingsContent(MyGUI::Widget* client)
     {
-        g_bList = client->createWidgetReal<MyGUI::MultiListBox>("Kenshi_MultiListBox", 0.02f, 0.02f, 0.96f, 0.78f,
+        g_bList = client->createWidgetReal<MyGUI::MultiListBox>("Kenshi_MultiListBox", 0.02f, 0.02f, 0.96f, 0.69f,
                                                                 MyGUI::Align::Default, "TownBuildingsList");
         int w = g_bList->getWidth();
-        g_bList->addColumn("Building", w * 44 / 100);
-        g_bList->addColumn("State", w * 16 / 100);
-        g_bList->addColumn("Owner", w * 24 / 100);
-        g_bList->addColumn("Away", w * 16 / 100 - 4);
+        g_bList->addColumn("Building", w * 38 / 100);
+        g_bList->addColumn("State", w * 20 / 100);
+        g_bList->addColumn("Part", w * 14 / 100);
+        g_bList->addColumn("Owner", w * 16 / 100);
+        g_bList->addColumn("Away", w * 12 / 100 - 4);
         g_bList->eventListChangePosition += MyGUI::newDelegate(onBuildingPicked);
-        rosterButton(client, 0.02f, 0.82f, 0.18f, "TownBuildingsNear", "Near camera", onBuildingsNearCamera);
-        g_bRuinsButton = rosterButton(client, 0.21f, 0.82f, 0.20f, "TownBuildingsRuins", "Showing: ruins",
+        // Row 1: finding things. Row 2: doing things.
+        rosterButton(client, 0.02f, 0.73f, 0.30f, "TownBuildingsNear", "Near camera", onBuildingsNearCamera);
+        g_bRuinsButton = rosterButton(client, 0.34f, 0.73f, 0.30f, "TownBuildingsRuins", "Showing: ruins",
                                       onBuildingsRuinsToggle);
-        rosterButton(client, 0.43f, 0.82f, 0.17f, "TownBuildingsRepair", "Repair", onBuildingRepair);
-        rosterButton(client, 0.61f, 0.82f, 0.17f, "TownBuildingsRepairNow", "Repair now", onBuildingRepairNow);
-        rosterButton(client, 0.80f, 0.82f, 0.18f, "TownBuildingsRemove", "Remove", onBuildingRemove);
+        rosterButton(client, 0.66f, 0.73f, 0.32f, "TownBuildingsMove", "Move to base", onBuildingMoveToBase);
+        rosterButton(client, 0.02f, 0.82f, 0.30f, "TownBuildingsRepair", "Repair", onBuildingRepair);
+        rosterButton(client, 0.34f, 0.82f, 0.30f, "TownBuildingsRepairNow", "Repair now", onBuildingRepairNow);
+        rosterButton(client, 0.66f, 0.82f, 0.32f, "TownBuildingsRemove", "Remove", onBuildingRemove);
         rosterText(client, 0.02f, 0.91f, 0.96f, 0.07f, "TownBuildingsHelp")
             ->setCaption("Look at the spot, press Near camera: what you're looking at is at the top.");
     }
