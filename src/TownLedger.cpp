@@ -223,12 +223,88 @@ namespace
         return t && ou && ou->player && t->getFaction() == ou->player->getFaction();
     }
 
+    bool hubIsOurs();
+
+    std::vector<TownBase*> hubParts()
+    {
+        std::vector<TownBase*> parts;
+        if (g_hub)
+            parts.push_back(g_hub);
+        parts.insert(parts.end(), g_hubTwins.begin(), g_hubTwins.end());
+        return parts;
+    }
+
     // The player's base: the Hub part holding the buildings the player put up,
-    // where Kenshi's builders look for work. The original town is the bigger
-    // part, chosen as g_hub; the base is its twin (or the Hub itself if alone).
+    // where Kenshi's builders look for work. While the Hub is ours exactly one
+    // part is "active" (the log, 2026-11-22), and that's the base. It's picked
+    // once and remembered until the parts change (a load), because building
+    // counts can't identify it: consolidating makes the base the bigger part.
+    TownBase* g_basePart = NULL;
+    bool g_consolidateFailed = false;
+
     TownBase* hubBase()
     {
-        return g_hubTwins.empty() ? g_hub : g_hubTwins[0];
+        std::vector<TownBase*> parts = hubParts();
+        if (parts.size() < 2)
+            return g_hub;
+        if (g_basePart && std::find(parts.begin(), parts.end(), g_basePart) != parts.end())
+            return g_basePart;
+        g_basePart = NULL;
+        if (!hubIsOurs())
+            return NULL;
+        TownBase* active = NULL;
+        int nActive = 0;
+        for (size_t i = 0; i < parts.size(); ++i)
+            if (parts[i]->isActive())
+            {
+                active = parts[i];
+                ++nActive;
+            }
+        if (nActive == 1)
+            g_basePart = active;
+        return g_basePart;
+    }
+
+    // Make the Hub one town where it matters: move every building we own out
+    // of the original part into the base, so builders (and whatever else
+    // looks only at the player's base) see all of it. Runs on Claim and after
+    // each load. Moves one building first and checks it landed, and stops if
+    // Building::_changeTown doesn't take. Buildings we don't own (the bar's
+    // Trade Ninjas, the Shinobi) stay put. Returns "" when there was nothing to do.
+    std::string consolidateHub()
+    {
+        TownBase* base = hubBase();
+        std::vector<TownBase*> parts = hubParts();
+        if (!base || parts.size() < 2 || !base->isTown() || !ou || !ou->player)
+            return "";
+        Faction* mine = ou->player->getFaction();
+        std::vector<Building*> toMove;
+        for (size_t p = 0; p < parts.size(); ++p)
+        {
+            if (parts[p] == base)
+                continue;
+            TownBuildingsManager* mgr = parts[p]->getBuildingsManager();
+            if (!mgr)
+                continue;
+            for (ogre_unordered_map<Building*, TownBuildingsManager::BuildingInfo>::type::iterator it =
+                     mgr->buildingEntities.begin();
+                 it != mgr->buildingEntities.end(); ++it)
+                if (it->first && it->first->getFaction() == mine)
+                    toMove.push_back(it->first);
+        }
+        if (toMove.empty() || g_consolidateFailed)
+            return "";
+        toMove[0]->_changeTown(base->isTown());
+        if (toMove[0]->getTown() != base)
+        {
+            g_consolidateFailed = true; // don't retry (and re-log) every tick
+            return "consolidating the Hub: the first move did NOT take, so nothing else was moved";
+        }
+        for (size_t i = 1; i < toMove.size(); ++i)
+            toMove[i]->_changeTown(base->isTown());
+        std::ostringstream out;
+        out << "moved " << toMove.size() << " buildings into the base (now " << buildingCount(base) << ")";
+        return out.str();
     }
 
     // How finished a building is: 1 when standing, below 1 while unfinished.
@@ -1349,6 +1425,12 @@ namespace
         }
         if (ours)
             g_originalOwners.clear();
+        else
+        {
+            std::string merged = consolidateHub();
+            if (!merged.empty())
+                DebugLog("TownLedger: " + merged);
+        }
         std::ostringstream note;
         note << (ours ? "gave Hub back, " : "claimed Hub, ") << moved << " buildings moved";
         refresh();
@@ -1723,6 +1805,11 @@ namespace
             return;
         }
         g_reapplyPending = false;
+        // Fold anything ours left in the original Hub part into the base,
+        // before jobs are given out against those buildings.
+        std::string merged = consolidateHub();
+        if (!merged.empty())
+            actionLog("[hub] after load: " + merged);
         rebuildCitizensFromNames();
         std::string done = reapplyAll();
         actionLog("[roster] after load:" + (done.empty() ? std::string(" nobody has a profile") : done));
@@ -3248,6 +3335,12 @@ namespace
             autoReapplyTick();
             arrivalsTick();
             contractTick();
+            if (hubIsOurs())
+            {
+                std::string merged = consolidateHub();
+                if (!merged.empty())
+                    actionLog("[hub] " + merged);
+            }
             if (g_devFast)
                 applyDevSpeed();
         }
