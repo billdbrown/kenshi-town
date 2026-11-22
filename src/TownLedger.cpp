@@ -97,6 +97,7 @@ namespace
     void onArrivalNowClick(MyGUI::WidgetPtr); // arrivals, further down
     void onGarrisonDueNow(MyGUI::WidgetPtr);  // the garrison contract, further down
     void onCleanupHubNow(MyGUI::WidgetPtr);   // the Hub clean-up, further down
+    void startContractOnClaim();               // the per-game record, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
 
@@ -1447,6 +1448,7 @@ namespace
             std::string merged = consolidateHub();
             if (!merged.empty())
                 DebugLog("TownLedger: " + merged);
+            startContractOnClaim(); // the clean-up follows on the next tick
         }
         std::ostringstream note;
         note << (ours ? "gave Hub back, " : "claimed Hub, ") << moved << " buildings moved";
@@ -2544,52 +2546,64 @@ namespace
         return int(guards) * FEE_PER_GUARD_PER_DAY * 7;
     }
 
-    // A game not yet saved has no name, so its record is kept in memory and
-    // forgotten when a different world loads; on the first save it's carried
-    // over under the save's name. (Every new game once shared one "(unsaved)"
-    // record on disk, so the second new game never got its clean-up.)
-    Contract g_unsaved;
-    bool g_unsavedValid = false;
-    const std::string UNSAVED = "(unsaved)";
+    // The record in play this session. Save names can't identify a game: in a
+    // new game, SaveManager::getCurrentGame() still returns the last save
+    // loaded (2026-11-22: a new game picked up "autosave1"'s record and so
+    // skipped the deed claim and the clean-up). So the record lives in memory:
+    // started fresh by claiming the Hub (once per game), looked up by save name
+    // only when a different world has loaded, and written under whatever name
+    // the game is saved with.
+    Contract g_current;
+    bool g_currentValid = false;
 
     Contract* currentContract()
     {
         if (!g_contractsLoaded)
             loadContracts();
-        if (g_worldChanged) // a different world: an unsaved game's record doesn't carry over
+        if (g_worldChanged)
         {
-            g_unsavedValid = false;
+            g_currentValid = false;
             g_worldChanged = false;
         }
-        std::string name = saveName();
-        if (name == UNSAVED)
-            return g_unsavedValid ? &g_unsaved : NULL;
-        std::map<std::string, Contract>::iterator it = g_contracts.find(name);
-        if (it != g_contracts.end())
-            return &it->second;
-        if (g_unsavedValid) // first save of a new game
+        if (!g_currentValid)
         {
-            g_contracts[name] = g_unsaved;
-            g_unsavedValid = false;
-            saveContracts();
-            return &g_contracts[name];
+            std::map<std::string, Contract>::iterator it = g_contracts.find(saveName());
+            if (it != g_contracts.end())
+            {
+                g_current = it->second;
+                g_currentValid = true;
+            }
         }
-        return NULL;
+        return g_currentValid ? &g_current : NULL;
+    }
+
+    // Write the record in play under the current save name.
+    void persistContract()
+    {
+        if (!g_currentValid)
+            return;
+        g_contracts[saveName()] = g_current;
+        saveContracts();
     }
 
     void storeContract(const Contract& c)
     {
-        std::string name = saveName();
-        if (name == UNSAVED)
-        {
-            g_unsaved = c;
-            g_unsavedValid = true;
-        }
-        else
-        {
-            g_contracts[name] = c;
-            saveContracts();
-        }
+        g_current = c;
+        g_currentValid = true;
+        persistContract();
+    }
+
+    // Claiming the Hub starts a fresh contract with the clean-up still to do.
+    // Called from Claim; a reload doesn't claim (the Hub loads as ours).
+    void startContractOnClaim()
+    {
+        double now = gameHours();
+        Contract fresh = {now, now + GRACE_DAYS * 24.0, false, false, NO_WARNING};
+        storeContract(fresh);
+        std::ostringstream note;
+        note << "[garrison] the Outlaws will guard the Hub for " << int(GRACE_DAYS)
+             << " days. After that they want paying (see Town).";
+        actionLog(note.str());
     }
 
     void garrisonLeaves(Contract& c, const std::string& why)
@@ -2599,7 +2613,7 @@ namespace
         for (size_t i = 0; i < guards.size(); ++i)
             ou->destroy(guards[i], false, "Kenshi Town: garrison left");
         c.gone = true;
-        saveContracts();
+        persistContract();
         std::ostringstream note;
         note << "[garrison] " << guards.size() << " Outlaws left the Hub (" << why
              << "). The Hub is guarded by whoever you've trained.";
@@ -2715,8 +2729,8 @@ namespace
 
     void deedTick()
     {
-        if (!g_hub || hubIsOurs() || buildingCount(g_hub) == 0 || currentContract())
-            return; // no Hub yet, already ours, still loading, or claimed before in this game
+        if (!g_hub || hubIsOurs() || buildingCount(g_hub) == 0)
+            return; // no Hub yet, already ours, or still loading
         if (!playerHoldsDeed())
             return;
         onClaimClick(NULL);
@@ -2741,20 +2755,25 @@ namespace
             return;
         double now = gameHours();
         Contract* c = currentContract();
+        static std::string s_persistedAs;
+        if (c && saveName() != s_persistedAs) // saved under a new name: write it there too
+        {
+            persistContract();
+            s_persistedAs = saveName();
+        }
         if (!c)
         {
-            Contract fresh = {now, now + GRACE_DAYS * 24.0, false, false, NO_WARNING};
+            // Ours with no record: a save from before records, or one saved
+            // under a name we never saw. Start the contract, but don't clean up
+            // a Hub the player has already been living in.
+            Contract fresh = {now, now + GRACE_DAYS * 24.0, false, true, NO_WARNING};
             storeContract(fresh);
-            std::ostringstream note;
-            note << "[garrison] the Outlaws will guard the Hub for " << int(GRACE_DAYS)
-                 << " days. After that they want paying (see Town).";
-            actionLog(note.str());
             return;
         }
         if (!c->cleaned && buildingCount(g_hub) > 0)
         {
             c->cleaned = true;
-            saveContracts();
+            persistContract();
             actionLog("[hub] " + cleanupHub());
         }
         if (c->gone)
@@ -2832,7 +2851,7 @@ namespace
         double now = gameHours();
         c->paidUntil = (c->paidUntil > now ? c->paidUntil : now) + 7 * 24.0;
         c->warned = NO_WARNING;
-        saveContracts();
+        persistContract();
         std::ostringstream note;
         note << "[garrison] paid " << fee << " cats: the Outlaws stay another week";
         actionLog(note.str());
@@ -2849,7 +2868,7 @@ namespace
         }
         c->paidUntil = gameHours();
         c->warned = NO_WARNING;
-        saveContracts();
+        persistContract();
         actionLog("[garrison] dev: contract made due now; they leave in a day unless paid");
     }
 
