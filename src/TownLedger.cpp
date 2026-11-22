@@ -401,10 +401,40 @@ namespace
 
     // If the game found no town for a preview inside a Hub we own, give it the
     // Hub, and record (once per change) what the game's own lookups saw.
+    long g_twinSwaps = 0;
+    std::string g_lastAssigned;
+
     void giveHubIfTownless(PreviewBuilding* self)
     {
         ++g_whichTownCalls;
-        if (self->inTown || !g_hub || !insideHub(self->getPosition()))
+        if (!g_hub || !insideHub(self->getPosition()))
+            return;
+
+        // Record which town the game assigned, each time it changes.
+        {
+            std::ostringstream a;
+            a << (self->inTown ? describeTown(self->inTown) : std::string("none"))
+              << (self->inTown && self->inTown == g_hub->isTown() ? " = our Hub" : "");
+            if (self->inTown)
+                a << ", " << buildingCount(self->inTown) << " buildings";
+            if (a.str() != g_lastAssigned)
+            {
+                g_lastAssigned = a.str();
+                DebugLog("TownLedger: [building town assigned] " + g_lastAssigned);
+            }
+        }
+
+        // The Hub loads as two town objects at the same spot; the empty twin,
+        // still Holy Nation Outlaws, can be the one assigned. Swap in ours.
+        if (self->inTown && hubIsOurs() && self->inTown != g_hub->isTown() &&
+            self->inTown->getName() == g_hub->getName() && buildingCount(self->inTown) == 0)
+        {
+            self->inTown = g_hub->isTown();
+            ++g_twinSwaps;
+            return;
+        }
+
+        if (self->inTown)
             return;
         ++g_whichTownNullInHub;
 
@@ -1038,7 +1068,7 @@ namespace
         if (g_hub)
             out << "Hub: " << factionName(g_hub->getFaction()) << ", " << buildingCount(g_hub)
                 << " buildings" << (hubIsOurs() ? " (ours)" : "") << "\nBuild fixes: " << g_whichTownFixed
-                << " of " << g_whichTownCalls << " previews\n";
+                << " given the Hub, " << g_twinSwaps << " twin swaps, of " << g_whichTownCalls << " previews\n";
         else
             out << "Hub not found\n";
         out << "Population: " << people.size() << "\n\n";
