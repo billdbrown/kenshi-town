@@ -31,6 +31,7 @@
 #include <kenshi/Item.h>
 #include <kenshi/CharStats.h>
 #include <kenshi/Inventory.h>
+#include <kenshi/SaveManager.h>
 #include <kenshi/util/hand.h>
 // Tasker.h can't be included alongside AI/AITaskSystem.h: KenshiLib 0.4.0
 // defines `enum taskPriority` and its enumerators in both. We need only two
@@ -91,6 +92,7 @@ namespace
     size_t g_reapplyLastCount = 0;
     void onRosterClick(MyGUI::WidgetPtr);     // the Town Roster, further down
     void onArrivalNowClick(MyGUI::WidgetPtr); // arrivals, further down
+    void onGarrisonDueNow(MyGUI::WidgetPtr);  // the garrison contract, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
 
@@ -1442,6 +1444,7 @@ namespace
         addButton(client, 11, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
         addButton(client, 12, "TownLedgerRoster", onRosterClick)->setCaption("Roster");
         addButton(client, 13, "TownLedgerArrivalNow", onArrivalNowClick)->setCaption("Arrival now");
+        addButton(client, 14, "TownLedgerGarrisonDue", onGarrisonDueNow)->setCaption("Garrison due now");
 
         g_window->setVisible(false);
     }
@@ -2302,6 +2305,241 @@ namespace
         toggleRoster();
     }
 
+    // ==== The garrison contract ===============================================
+    //
+    // The Holy Nation Outlaws who guard the Hub stay on for GRACE_DAYS after it
+    // becomes ours. After that they want paying, a week at a time; a day
+    // overdue and they leave, and the Hub is guarded by whoever we've trained.
+    // Kept per save (by save name) in mods/TownLedger/contracts.txt.
+
+    const double GRACE_DAYS = 10.0;
+    const int FEE_PER_GUARD_PER_DAY = 25;
+    const double OVERDUE_HOURS = 24.0;
+    const int NO_WARNING = 999;
+    const char* CONTRACTS_FILE = "mods\\TownLedger\\contracts.txt";
+
+    struct Contract
+    {
+        double start;     // game hour the Hub became ours
+        double paidUntil; // game hour the current term ends
+        bool gone;        // the garrison has left
+        int warned;       // smallest warning threshold given (48, 24, 0), NO_WARNING if none
+    };
+    std::map<std::string, Contract> g_contracts;
+    bool g_contractsLoaded = false;
+
+    std::string saveName()
+    {
+        SaveManager* sm = SaveManager::getSingleton();
+        std::string n = sm ? sm->getCurrentGame() : std::string();
+        return n.empty() ? std::string("(unsaved)") : fileSafe(n);
+    }
+
+    void saveContracts()
+    {
+        FILE* f = fopen(CONTRACTS_FILE, "w");
+        if (!f)
+            return;
+        fprintf(f, "# Kenshi Town garrison contracts: save<TAB>start hour<TAB>paid until hour<TAB>gone\n");
+        for (std::map<std::string, Contract>::iterator it = g_contracts.begin(); it != g_contracts.end(); ++it)
+            fprintf(f, "%s\t%f\t%f\t%d\n", it->first.c_str(), it->second.start, it->second.paidUntil,
+                    it->second.gone ? 1 : 0);
+        fclose(f);
+    }
+
+    void loadContracts()
+    {
+        g_contractsLoaded = true;
+        FILE* f = fopen(CONTRACTS_FILE, "r");
+        if (!f)
+            return;
+        char line[512];
+        while (fgets(line, sizeof(line), f))
+        {
+            if (line[0] == '#')
+                continue;
+            char name[256];
+            double start = 0, paid = 0;
+            int gone = 0;
+            if (sscanf(line, "%255[^\t]\t%lf\t%lf\t%d", name, &start, &paid, &gone) == 4)
+            {
+                Contract c = {start, paid, gone != 0, NO_WARNING};
+                g_contracts[name] = c;
+            }
+        }
+        fclose(f);
+    }
+
+    // The Outlaws inside the Hub right now.
+    void garrison(std::vector<Character*>& out)
+    {
+        out.clear();
+        Faction* outlaws = hubVanillaOwner();
+        if (!outlaws || !g_hub)
+            return;
+        lektor<RootObject*> found;
+        outlaws->getCharactersInArea(found, g_hub->getPosition(), g_hubRadius, false);
+        for (uint32_t i = 0; i < found.size(); ++i)
+        {
+            Character* c = static_cast<Character*>(found[i]);
+            if (c && !c->isDead())
+                out.push_back(c);
+        }
+    }
+
+    int weeklyFee(size_t guards)
+    {
+        return int(guards) * FEE_PER_GUARD_PER_DAY * 7;
+    }
+
+    Contract* currentContract()
+    {
+        if (!g_contractsLoaded)
+            loadContracts();
+        std::map<std::string, Contract>::iterator it = g_contracts.find(saveName());
+        return it == g_contracts.end() ? NULL : &it->second;
+    }
+
+    void garrisonLeaves(Contract& c, const std::string& why)
+    {
+        std::vector<Character*> guards;
+        garrison(guards);
+        for (size_t i = 0; i < guards.size(); ++i)
+            ou->destroy(guards[i], false, "Kenshi Town: garrison left");
+        c.gone = true;
+        saveContracts();
+        std::ostringstream note;
+        note << "[garrison] " << guards.size() << " Outlaws left the Hub (" << why
+             << "). The Hub is guarded by whoever you've trained.";
+        actionLog(note.str());
+    }
+
+    // Main-loop tick: start the contract when the Hub is first ours in this
+    // save, warn as it runs down, and let the garrison go when overdue.
+    void contractTick()
+    {
+        if (!ou || !ou->player || !g_hub || !hubIsOurs())
+            return;
+        double now = gameHours();
+        Contract* c = currentContract();
+        if (!c)
+        {
+            Contract fresh = {now, now + GRACE_DAYS * 24.0, false, NO_WARNING};
+            g_contracts[saveName()] = fresh;
+            saveContracts();
+            std::ostringstream note;
+            note << "[garrison] the Outlaws will guard the Hub for " << int(GRACE_DAYS)
+                 << " days. After that they want paying (see Town).";
+            actionLog(note.str());
+            return;
+        }
+        if (c->gone)
+            return;
+        double left = c->paidUntil - now;
+        if (left <= -OVERDUE_HOURS)
+        {
+            garrisonLeaves(*c, "unpaid");
+            return;
+        }
+        // Warn once per threshold crossed: 2 days left, 1 day left, due.
+        int bucket = left <= 0 ? 0 : left <= 24 ? 24 : left <= 48 ? 48 : NO_WARNING;
+        if (bucket < c->warned)
+        {
+            c->warned = bucket;
+            std::vector<Character*> guards;
+            garrison(guards);
+            std::ostringstream note;
+            if (bucket == 0)
+                note << "[garrison] payment is due: " << weeklyFee(guards.size())
+                     << " cats for a week, or they leave in a day (Town window)";
+            else
+                note << "[garrison] " << bucket / 24 << " day" << (bucket > 24 ? "s" : "")
+                     << " until the Outlaws want paying: " << weeklyFee(guards.size()) << " cats a week";
+            actionLog(note.str());
+        }
+    }
+
+    std::string contractLine()
+    {
+        if (!g_hub || !hubIsOurs())
+            return "Garrison: the Hub isn't ours.";
+        Contract* c = currentContract();
+        std::vector<Character*> guards;
+        garrison(guards);
+        std::ostringstream out;
+        if (!c)
+            out << "Garrison: " << guards.size() << " Outlaws (contract starts shortly)";
+        else if (c->gone)
+            out << "Garrison: gone. The Hub is guarded by your own people.";
+        else
+        {
+            double left = c->paidUntil - gameHours();
+            bool grace = c->paidUntil <= c->start + GRACE_DAYS * 24.0 + 0.01;
+            out << "Garrison: " << guards.size() << " Outlaws, ";
+            if (left > 0)
+                out << left / 24.0 << " days " << (grace ? "of grace" : "paid") << " left";
+            else
+                out << "PAYMENT DUE, they leave in " << int(left + OVERDUE_HOURS) << "h";
+            out << ". A week costs " << weeklyFee(guards.size()) << " cats.";
+        }
+        return out.str();
+    }
+
+    void onGarrisonPay(MyGUI::WidgetPtr)
+    {
+        Contract* c = currentContract();
+        int* money = (ou && ou->player) ? factionMoney(ou->player->getFaction()) : NULL;
+        if (!c || c->gone || !money)
+        {
+            actionLog("[garrison] there's no contract to pay");
+            return;
+        }
+        std::vector<Character*> guards;
+        garrison(guards);
+        int fee = weeklyFee(guards.size());
+        if (*money < fee)
+        {
+            std::ostringstream note;
+            note << "[garrison] a week costs " << fee << " cats; you have " << *money;
+            actionLog(note.str());
+            return;
+        }
+        *money -= fee;
+        double now = gameHours();
+        c->paidUntil = (c->paidUntil > now ? c->paidUntil : now) + 7 * 24.0;
+        c->warned = NO_WARNING;
+        saveContracts();
+        std::ostringstream note;
+        note << "[garrison] paid " << fee << " cats: the Outlaws stay another week";
+        actionLog(note.str());
+    }
+
+    // Dev: make the contract fall due now, to test the end of the grace period.
+    void onGarrisonDueNow(MyGUI::WidgetPtr)
+    {
+        Contract* c = currentContract();
+        if (!c || c->gone)
+        {
+            actionLog("[garrison] no running contract (claim the Hub first, or it already ended)");
+            return;
+        }
+        c->paidUntil = gameHours();
+        c->warned = NO_WARNING;
+        saveContracts();
+        actionLog("[garrison] dev: contract made due now; they leave in a day unless paid");
+    }
+
+    void onGarrisonDismiss(MyGUI::WidgetPtr)
+    {
+        Contract* c = currentContract();
+        if (!c || c->gone)
+        {
+            actionLog("[garrison] there's no garrison to dismiss");
+            return;
+        }
+        garrisonLeaves(*c, "dismissed");
+    }
+
     // ==== Town window: the Hub at a glance ====================================
     //
     // Population by profile, storage, who's at the gate, and a roll-up of
@@ -2395,7 +2633,7 @@ namespace
             sum << ")";
         }
         sum << "\nStorage: " << containers << " containers, " << stock.size() << " kinds of item"
-            << "    At the gate: " << g_gate.size();
+            << "    At the gate: " << g_gate.size() << "\n" << contractLine();
         g_townSummary->setCaption(sum.str());
 
         // Stock table, biggest first.
@@ -2427,9 +2665,11 @@ namespace
         g_town->setCaption("Town");
         g_town->eventWindowButtonPressed += MyGUI::newDelegate(onRosterWindowButton);
         MyGUI::Widget* client = g_town->getClientWidget();
-        g_townSummary = rosterText(client, 0.02f, 0.02f, 0.96f, 0.16f, "TownAdminSummary");
+        g_townSummary = rosterText(client, 0.02f, 0.02f, 0.96f, 0.19f, "TownAdminSummary");
+        rosterButton(client, 0.02f, 0.22f, 0.30f, "TownAdminPay", "Pay garrison a week", onGarrisonPay);
+        rosterButton(client, 0.33f, 0.22f, 0.20f, "TownAdminDismiss", "Dismiss", onGarrisonDismiss);
         g_townStock = client->createWidgetReal<MyGUI::MultiListBox>(
-            "Kenshi_MultiListBox", 0.02f, 0.20f, 0.96f, 0.78f, MyGUI::Align::Default, "TownAdminStock");
+            "Kenshi_MultiListBox", 0.02f, 0.31f, 0.96f, 0.67f, MyGUI::Align::Default, "TownAdminStock");
         int w = g_townStock->getWidth();
         g_townStock->addColumn("Item", w * 55 / 100);
         g_townStock->addColumn("Count", w * 18 / 100);
@@ -2514,6 +2754,7 @@ namespace
             rebuildCitizensFromNames();
             autoReapplyTick();
             arrivalsTick();
+            contractTick();
             if (g_devFast)
                 applyDevSpeed();
         }
