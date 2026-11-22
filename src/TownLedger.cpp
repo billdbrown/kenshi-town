@@ -57,6 +57,8 @@ namespace TaskerFields
 #include <mygui/MyGUI_Delegate.h>
 #include <mygui/MyGUI_ListBox.h>
 #include <mygui/MyGUI_MultiListBox.h>
+#include <mygui/MyGUI_TabControl.h>
+#include <mygui/MyGUI_TabItem.h>
 
 #include "Squads.h"
 
@@ -66,6 +68,7 @@ namespace TaskerFields
 #include <Windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
 #include <sstream>
@@ -1442,19 +1445,8 @@ namespace
             sender->setVisible(false);
     }
 
-    void createWindow()
+    void createLedgerContent(MyGUI::Widget* client)
     {
-        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-        if (!gui)
-            return;
-
-        g_window = gui->createWidgetReal<MyGUI::Window>(
-            "Kenshi_WindowCX", 0.68f, 0.2f, 0.3f, 0.55f,
-            MyGUI::Align::Default, "Window", "TownLedgerWindow");
-        g_window->setCaption("Town Ledger");
-        g_window->eventWindowButtonPressed += MyGUI::newDelegate(onWindowButton);
-
-        MyGUI::Widget* client = g_window->getClientWidget();
         g_text = client->createWidgetReal<MyGUI::EditBox>(
             "Kenshi_EditBox", 0.03f, 0.02f, 0.94f, 0.34f,
             MyGUI::Align::Stretch, "TownLedgerText");
@@ -1476,23 +1468,16 @@ namespace
         g_devButton = addButton(client, 9, "TownLedgerDev", onDevClick);
         addButton(client, 10, "TownLedgerRemoveSelected", onRemoveSelectedClick)->setCaption("Remove selected");
         addButton(client, 11, "TownLedgerClearRuins", onClearRuinsClick)->setCaption("Clear ALL ruins");
-        addButton(client, 12, "TownLedgerRoster", onRosterClick)->setCaption("Roster");
+        addButton(client, 12, "TownLedgerRoster", onRosterClick)->setCaption("Roster tab");
         addButton(client, 13, "TownLedgerArrivalNow", onArrivalNowClick)->setCaption("Arrival now");
         addButton(client, 14, "TownLedgerGarrisonDue", onGarrisonDueNow)->setCaption("Garrison due now");
-
-        g_window->setVisible(false);
     }
+
+    void showTab(size_t tab); // the main window, further down
 
     void toggle()
     {
-        if (!g_window)
-            createWindow();
-        if (!g_window)
-            return;
-        bool show = !g_window->getVisible();
-        g_window->setVisible(show);
-        if (show)
-            refresh();
+        showTab(3); // Ledger
     }
 
     // ==== Town Roster: job profiles, and who works which ================
@@ -2304,16 +2289,8 @@ namespace
         return e;
     }
 
-    void createRoster()
+    void createRosterContent(MyGUI::Widget* client)
     {
-        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-        if (!gui)
-            return;
-        g_roster = gui->createWidgetReal<MyGUI::Window>("Kenshi_WindowCX", 0.2f, 0.15f, 0.46f, 0.62f,
-                                                        MyGUI::Align::Default, "Window", "TownRosterWindow");
-        g_roster->setCaption("Town Roster");
-        g_roster->eventWindowButtonPressed += MyGUI::newDelegate(onRosterWindowButton);
-        MyGUI::Widget* client = g_roster->getClientWidget();
 
         // Left column: profiles, the selected one's jobs, and making profiles.
         g_rosterProfiles = client->createWidgetReal<MyGUI::ListBox>("Kenshi_ListBox", 0.02f, 0.02f, 0.36f, 0.40f,
@@ -2345,25 +2322,11 @@ namespace
         rosterButton(client, 0.695f, 0.785f, 0.285f, "TownRosterReapply", "Reapply jobs", onRosterReapply);
 
         g_rosterStatus = rosterText(client, 0.02f, 0.88f, 0.96f, 0.10f, "TownRosterStatus");
-
-        g_roster->setVisible(false);
     }
 
     void toggleRoster()
     {
-        if (!g_roster)
-            createRoster();
-        if (!g_roster)
-            return;
-        bool show = !g_roster->getVisible();
-        g_roster->setVisible(show);
-        if (show)
-        {
-            g_rosterProfileRows.clear(); // force a refill
-            g_rosterPeopleText.clear();
-            g_rosterGateRows.clear();
-            refreshRoster();
-        }
+        showTab(1); // Roster
     }
 
     void onRosterClick(MyGUI::WidgetPtr)
@@ -2721,16 +2684,8 @@ namespace
         fillTable(g_townStock, g_townStockRows, rows);
     }
 
-    void createTown()
+    void createTownContent(MyGUI::Widget* client)
     {
-        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-        if (!gui)
-            return;
-        g_town = gui->createWidgetReal<MyGUI::Window>("Kenshi_WindowCX", 0.25f, 0.18f, 0.40f, 0.58f,
-                                                      MyGUI::Align::Default, "Window", "TownAdminWindow");
-        g_town->setCaption("Town");
-        g_town->eventWindowButtonPressed += MyGUI::newDelegate(onRosterWindowButton);
-        MyGUI::Widget* client = g_town->getClientWidget();
         g_townSummary = rosterText(client, 0.02f, 0.02f, 0.96f, 0.19f, "TownAdminSummary");
         rosterButton(client, 0.02f, 0.22f, 0.30f, "TownAdminPay", "Pay garrison a week", onGarrisonPay);
         rosterButton(client, 0.33f, 0.22f, 0.20f, "TownAdminDismiss", "Dismiss", onGarrisonDismiss);
@@ -2740,45 +2695,243 @@ namespace
         g_townStock->addColumn("Item", w * 55 / 100);
         g_townStock->addColumn("Count", w * 18 / 100);
         g_townStock->addColumn("In", w * 27 / 100 - 4);
-        g_town->setVisible(false);
+    }
+
+    // ==== Buildings tab: find things in the Hub, repair ruins, clear debris ===
+    //
+    // Every building in the Hub, nearest to where the camera is looking first,
+    // so "the thing I'm looking at" is at the top. Clicking a row moves the
+    // camera to it. Repair turns a ruin back into an unfinished building for
+    // builders to put up with materials (experimental: how Kenshi takes a
+    // ruin being un-destroyed is unknown); Repair now finishes it on the spot
+    // (dev). Remove takes it away, as Remove selected did.
+
+    MyGUI::MultiListBox* g_bList = NULL;
+    MyGUI::Button* g_bRuinsButton = NULL;
+    std::vector<Building*> g_bRows;
+    std::vector<std::string> g_bShown;
+    bool g_bRuinsOnly = true;
+
+    void refreshBuildings()
+    {
+        if (!g_bList || !ou || !ou->player || !g_hub)
+            return;
+        Ogre::Vector3 eye = ou->player->getCameraCenter();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        std::vector<std::pair<float, Building*> > order;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            if (g_bRuinsOnly && !all[i]->isDestroyed())
+                continue;
+            Ogre::Vector3 p = all[i]->getPosition();
+            float dx = p.x - eye.x, dz = p.z - eye.z;
+            order.push_back(std::make_pair(dx * dx + dz * dz, all[i]));
+        }
+        std::sort(order.begin(), order.end());
+        g_bRows.clear();
+        std::vector<std::string> rows;
+        for (size_t i = 0; i < order.size() && i < 200; ++i)
+        {
+            Building* b = order[i].second;
+            std::ostringstream row;
+            row << b->getName() << "\t" << (b->isDestroyed() ? "ruin" : "standing") << "\t"
+                << factionName(b->getFaction()) << "\t" << int(sqrt(order[i].first) / 10.0f) << " m";
+            rows.push_back(row.str());
+            g_bRows.push_back(b);
+        }
+        if (rows.empty())
+            rows.push_back(g_bRuinsOnly ? "No ruins in the Hub.\t\t\t" : "No buildings.\t\t\t");
+        fillTable(g_bList, g_bShown, rows);
+        if (g_bRuinsButton)
+            g_bRuinsButton->setCaption(g_bRuinsOnly ? "Showing: ruins" : "Showing: everything");
+    }
+
+    Building* buildingPicked()
+    {
+        size_t i = g_bList ? g_bList->getIndexSelected() : MyGUI::ITEM_NONE;
+        return (i != MyGUI::ITEM_NONE && i < g_bRows.size()) ? g_bRows[i] : NULL;
+    }
+
+    void onBuildingPicked(MyGUI::MultiListBox*, size_t)
+    {
+        Building* b = buildingPicked();
+        if (b && ou && ou->player)
+            ou->player->focusCamera(b->getPosition());
+    }
+
+    void onBuildingsNearCamera(MyGUI::WidgetPtr)
+    {
+        g_bShown.clear();
+        refreshBuildings();
+    }
+
+    void onBuildingsRuinsToggle(MyGUI::WidgetPtr)
+    {
+        g_bRuinsOnly = !g_bRuinsOnly;
+        g_bShown.clear();
+        refreshBuildings();
+    }
+
+    std::string describeRepairState(Building* b)
+    {
+        std::ostringstream out;
+        Building::ConstructionState* st = b->getBuildState();
+        out << (b->isDestroyed() ? "still a ruin" : "no longer a ruin");
+        if (st)
+            out << ", construction " << int(st->constructionProgress * 100.0f) << "%";
+        return out.str();
+    }
+
+    void repairPicked(bool instantly)
+    {
+        Building* b = buildingPicked();
+        if (!b)
+        {
+            actionLog("[buildings] pick a building in the list first");
+            return;
+        }
+        if (!b->isDestroyed())
+        {
+            actionLog("[buildings] " + b->getName() + " isn't a ruin");
+            return;
+        }
+        b->setDestroyed(false);
+        b->setConstructionProgress(instantly ? 1.0f : 0.0f);
+        actionLog("[buildings] repair " + std::string(instantly ? "now" : "ordered") + ": " + b->getName() + ": " +
+                  describeRepairState(b) + (instantly ? "" : " (needs builders and materials)"));
+        g_bShown.clear();
+        refreshBuildings();
+    }
+
+    void onBuildingRepair(MyGUI::WidgetPtr)
+    {
+        repairPicked(false);
+    }
+
+    void onBuildingRepairNow(MyGUI::WidgetPtr)
+    {
+        repairPicked(true);
+    }
+
+    void onBuildingRemove(MyGUI::WidgetPtr)
+    {
+        Building* b = buildingPicked();
+        if (!b)
+        {
+            actionLog("[buildings] pick a building in the list first");
+            return;
+        }
+        Ogre::Vector3 p = b->getPosition();
+        FILE* f = fopen(REMOVALS_FILE, "a");
+        if (f)
+        {
+            fprintf(f, "%s\t%f\t%f\t%s\n", b->getName().c_str(), p.x, p.z, b->isDestroyed() ? "destroyed" : "intact");
+            fclose(f);
+        }
+        actionLog("[buildings] removed " + b->getName());
+        ou->dynamicDestroyBuilding(hand(b));
+        g_bShown.clear();
+        g_bRows.clear();
+        g_bList->removeAllItems();
+    }
+
+    void createBuildingsContent(MyGUI::Widget* client)
+    {
+        g_bList = client->createWidgetReal<MyGUI::MultiListBox>("Kenshi_MultiListBox", 0.02f, 0.02f, 0.96f, 0.78f,
+                                                                MyGUI::Align::Default, "TownBuildingsList");
+        int w = g_bList->getWidth();
+        g_bList->addColumn("Building", w * 44 / 100);
+        g_bList->addColumn("State", w * 16 / 100);
+        g_bList->addColumn("Owner", w * 24 / 100);
+        g_bList->addColumn("Away", w * 16 / 100 - 4);
+        g_bList->eventListChangePosition += MyGUI::newDelegate(onBuildingPicked);
+        rosterButton(client, 0.02f, 0.82f, 0.18f, "TownBuildingsNear", "Near camera", onBuildingsNearCamera);
+        g_bRuinsButton = rosterButton(client, 0.21f, 0.82f, 0.20f, "TownBuildingsRuins", "Showing: ruins",
+                                      onBuildingsRuinsToggle);
+        rosterButton(client, 0.43f, 0.82f, 0.17f, "TownBuildingsRepair", "Repair", onBuildingRepair);
+        rosterButton(client, 0.61f, 0.82f, 0.17f, "TownBuildingsRepairNow", "Repair now", onBuildingRepairNow);
+        rosterButton(client, 0.80f, 0.82f, 0.18f, "TownBuildingsRemove", "Remove", onBuildingRemove);
+        rosterText(client, 0.02f, 0.91f, 0.96f, 0.07f, "TownBuildingsHelp")
+            ->setCaption("Look at the spot, press Near camera: what you're looking at is at the top.");
+    }
+
+    // ==== The main window: one window, four tabs ===============================
+
+    MyGUI::Window* g_main = NULL;
+    MyGUI::TabControl* g_tabs = NULL;
+
+    void createMain()
+    {
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        if (!gui)
+            return;
+        g_main = gui->createWidgetReal<MyGUI::Window>("Kenshi_WindowCX", 0.17f, 0.10f, 0.58f, 0.72f,
+                                                      MyGUI::Align::Default, "Window", "KenshiTownWindow");
+        g_main->setCaption("Kenshi Town");
+        g_main->eventWindowButtonPressed += MyGUI::newDelegate(onWindowButton);
+        g_tabs = g_main->getClientWidget()->createWidgetReal<MyGUI::TabControl>(
+            "Kenshi_TabControl", 0.0f, 0.0f, 1.0f, 1.0f, MyGUI::Align::Stretch, "KenshiTownTabs");
+        createTownContent(g_tabs->addItem("Town"));
+        createRosterContent(g_tabs->addItem("Roster"));
+        createBuildingsContent(g_tabs->addItem("Buildings"));
+        createLedgerContent(g_tabs->addItem("Ledger"));
+        // The old per-window pointers all mean "the main window is open" now.
+        g_window = g_roster = g_town = g_main;
+        g_main->setVisible(false);
+    }
+
+    // Open the window on a tab; the same tab again closes it.
+    void showTab(size_t tab)
+    {
+        if (!g_main)
+            createMain();
+        if (!g_main)
+            return;
+        bool sameTab = g_tabs->getIndexSelected() == tab;
+        if (g_main->getVisible() && sameTab)
+        {
+            g_main->setVisible(false);
+            return;
+        }
+        g_tabs->setIndexSelected(tab);
+        g_main->setVisible(true);
+        g_rosterProfileRows.clear(); // force refills
+        g_rosterPeopleText.clear();
+        g_rosterGateRows.clear();
+        g_townStockRows.clear();
+        g_bShown.clear();
+        refresh();
+        refreshRoster();
+        refreshTown();
+        refreshBuildings();
     }
 
     void toggleTown()
     {
-        if (!g_town)
-            createTown();
-        if (!g_town)
-            return;
-        bool show = !g_town->getVisible();
-        g_town->setVisible(show);
-        if (show)
-        {
-            g_townStockRows.clear();
-            refreshTown();
-        }
+        showTab(0); // Town
     }
 
     void onTownClick(MyGUI::WidgetPtr)
     {
-        toggleTown();
+        if (g_main && g_main->getVisible())
+            g_main->setVisible(false);
+        else
+            showTab(g_tabs ? g_tabs->getIndexSelected() : 0);
     }
 
-    // ---- HUD buttons: Ledger and Roster, always on screen while a game is
-    // loaded. Right edge, a third of the way down, clear of Kenshi's own bars.
+    // ---- HUD: one Town button, always on screen while a game is loaded.
 
-    MyGUI::Button* g_hudLedger = NULL;
-    MyGUI::Button* g_hudRoster = NULL;
     MyGUI::Button* g_hudTown = NULL;
 
-    void onHudLedgerClick(MyGUI::WidgetPtr)
-    {
-        toggle();
-    }
+    // Bottom of the screen with Kenshi's own HUD. Position is a guess at a gap
+    // in the bottom bar; adjust HUD_X / HUD_Y if it sits on something.
+    const float HUD_X = 0.81f, HUD_Y = 0.955f, HUD_W = 0.085f, HUD_H = 0.035f;
 
     MyGUI::Button* hudButton(float y, const char* name, const char* caption, void (*click)(MyGUI::WidgetPtr))
     {
         MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
-        MyGUI::Button* b = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.925f, y, 0.07f, 0.035f,
+        MyGUI::Button* b = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", HUD_X, y, HUD_W, HUD_H,
                                                                 MyGUI::Align::Default, "Main", name);
         b->setCaption(caption);
         b->eventMouseButtonClick += MyGUI::newDelegate(click);
@@ -2788,22 +2941,16 @@ namespace
     void updateHud()
     {
         bool inGame = ou && ou->player && ou->player->getAllPlayerCharacters().size() > 0;
-        if (!g_hudLedger && inGame && MyGUI::Gui::getInstancePtr())
+        if (!g_hudTown && inGame && MyGUI::Gui::getInstancePtr())
+            g_hudTown = hudButton(HUD_Y, "KenshiTownHud", "Town", onTownClick);
+        if (g_hudTown)
         {
-            g_hudLedger = hudButton(0.30f, "TownLedgerHudLedger", "Ledger", onHudLedgerClick);
-            g_hudRoster = hudButton(0.34f, "TownLedgerHudRoster", "Roster", onRosterClick);
-            g_hudTown = hudButton(0.38f, "TownLedgerHudTown", "Town", onTownClick);
-        }
-        if (g_hudLedger)
-        {
-            g_hudLedger->setVisible(inGame);
-            g_hudRoster->setVisible(inGame);
             g_hudTown->setVisible(inGame);
             std::ostringstream cap;
-            cap << "Roster";
+            cap << "Town";
             if (!g_gate.empty())
                 cap << " (" << g_gate.size() << " at gate)";
-            g_hudRoster->setCaption(cap.str());
+            g_hudTown->setCaption(cap.str());
         }
     }
 
@@ -2842,12 +2989,8 @@ namespace
         bool esc = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
         if (esc && !g_escWasDown && kenshiHasFocus())
         {
-            if (g_window)
-                g_window->setVisible(false);
-            if (g_roster)
-                g_roster->setVisible(false);
-            if (g_town)
-                g_town->setVisible(false);
+            if (g_main)
+                g_main->setVisible(false);
         }
         g_escWasDown = esc;
         if (g_frame % REFRESH_EVERY_N_FRAMES == 0)
