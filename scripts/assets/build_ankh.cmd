@@ -9,4 +9,5 @@ if not exist "%ASSET_OUT%" mkdir "%ASSET_OUT%"
 %BLENDER% -b "%ASSET_OUT%\ankh_low.blend" --python "%~dp0export_mesh.py" || exit /b 1
 copy /y "%ASSET_OUT%\ankh_diffuse.png" "%ASSET_OUT%\ankh.png" >nul
 python "%~dp0dds.py" "%ASSET_OUT%\ankh.dds" || exit /b 1
+python "%~dp0collision.py" "%ASSET_OUT%\ankh.mesh" || exit /b 1
 python "%~dp0meshdump.py" "%ASSET_OUT%\ankh.mesh"

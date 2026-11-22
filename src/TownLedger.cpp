@@ -59,6 +59,8 @@ namespace TaskerFields
 #include <mygui/MyGUI_MultiListBox.h>
 #include <mygui/MyGUI_TabControl.h>
 #include <mygui/MyGUI_TabItem.h>
+#include <mygui/MyGUI_TextBox.h>
+#include <mygui/MyGUI_ProgressBar.h>
 
 #include "Squads.h"
 
@@ -99,6 +101,7 @@ namespace
     void onCleanupHubNow(MyGUI::WidgetPtr);   // the Hub clean-up, further down
     void startContractOnClaim();               // the per-game record, further down
     void toast(const std::string& text);       // HUD toasts, further down
+    std::string plural(int n, const char* one, const char* many); // the tray, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
 
@@ -3359,46 +3362,144 @@ namespace
         return it == stock.end() ? 0 : it->second.count;
     }
 
-    bool qStormHousesCleared()
+    // How far along a task is, for the tracker: have/need fills the bar, text
+    // says it in words.
+    struct QuestProgress
+    {
+        int have, need;
+        std::string text;
+    };
+
+    std::string lowerCase(std::string s)
+    {
+        for (size_t i = 0; i < s.size(); ++i)
+            s[i] = char(tolower((unsigned char)s[i]));
+        return s;
+    }
+
+    std::string outOf(int have, int need)
+    {
+        std::ostringstream out;
+        out << have << " / " << need;
+        return out.str();
+    }
+
+    // The storm houses left in the Hub. The first-claim clean-up removes the
+    // "Old Storm House"s, and the two that survive it are named otherwise, so
+    // any name with "storm" in it counts, ruined or not (2026-11-22: matching
+    // the exact name made this task finish the moment a new game began). The
+    // most seen since the world loaded is the bar's whole.
+    int g_stormMax = 0;
+    bool g_stormLogged = false;
+
+    bool qStormHousesCleared(QuestProgress& p)
     {
         std::vector<Building*> all;
         hubBuildings(all);
+        int left = 0;
+        std::map<std::string, int> names;
         for (size_t i = 0; i < all.size(); ++i)
-            if (all[i]->getName() == "Old Storm House")
-                return false;
-        return true;
+            if (lowerCase(all[i]->getName()).find("storm") != std::string::npos)
+            {
+                ++left;
+                ++names[all[i]->getName()];
+            }
+        if (!g_stormLogged)
+        {
+            g_stormLogged = true;
+            std::ostringstream out;
+            out << "[quest] storm houses in the Hub:";
+            for (std::map<std::string, int>::iterator it = names.begin(); it != names.end(); ++it)
+                out << " " << it->second << " x " << it->first << ";";
+            actionLog(out.str());
+        }
+        if (left > g_stormMax)
+            g_stormMax = left;
+        p.need = g_stormMax > 0 ? g_stormMax : 1;
+        p.have = p.need - left;
+        std::ostringstream t;
+        t << left << " left to dismantle";
+        p.text = left == 0 ? "All cleared" : t.str();
+        return left == 0;
     }
 
-    bool qMaterialStorage()
+    // A building of ours in the Hub whose name contains `nameContains`:
+    // finished, under construction (the bar follows it) or not started.
+    bool qBuilt(const char* nameContains, QuestProgress& p)
     {
-        return hubHasStanding("Storage: Building Material");
-    }
-
-    bool qStoneMine()
-    {
-        return hubHasStanding("Stone Mine");
-    }
-
-    bool qStoneProcessor()
-    {
-        return hubHasStanding("Stone Processor");
-    }
-
-    bool qFirstCitizen()
-    {
-        return !g_citizens.empty();
-    }
-
-    bool qCitizenWithJob()
-    {
-        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
-            if (nameTag(*it) != CITIZEN_TAG && !nameTag(*it).empty())
-                return true;
+        p.have = 0;
+        p.need = 1;
+        p.text = "Not started";
+        if (!ou || !ou->player)
+            return false;
+        Faction* mine = ou->player->getFaction();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        float best = -1.0f;
+        for (size_t i = 0; i < all.size(); ++i)
+            if (all[i]->getFaction() == mine && !all[i]->isDestroyed() &&
+                all[i]->getName().find(nameContains) != std::string::npos)
+            {
+                float done = buildProgress(all[i]);
+                if (done > best)
+                    best = done;
+            }
+        if (best >= 1.0f)
+        {
+            p.have = 1;
+            p.text = "Built";
+            return true;
+        }
+        if (best >= 0.0f)
+        {
+            p.need = 100;
+            p.have = int(best * 100.0f);
+            std::ostringstream t;
+            t << "Building " << p.have << "%";
+            p.text = t.str();
+        }
         return false;
     }
 
-    bool qBedsForAll()
+    bool qMaterialStorage(QuestProgress& p)
     {
+        return qBuilt("Storage: Building Material", p);
+    }
+
+    bool qStoneMine(QuestProgress& p)
+    {
+        return qBuilt("Stone Mine", p);
+    }
+
+    bool qStoneProcessor(QuestProgress& p)
+    {
+        return qBuilt("Stone Processor", p);
+    }
+
+    bool qFirstCitizen(QuestProgress& p)
+    {
+        p.need = 1;
+        p.have = g_citizens.empty() ? 0 : 1;
+        p.text = outOf(p.have, p.need);
+        return p.have >= p.need;
+    }
+
+    bool qCitizenWithJob(QuestProgress& p)
+    {
+        int working = 0;
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+            if (nameTag(*it) != CITIZEN_TAG && !nameTag(*it).empty())
+                ++working;
+        p.need = 1;
+        p.have = working > 0 ? 1 : 0;
+        p.text = outOf(p.have, p.need);
+        return working > 0;
+    }
+
+    bool qBedsForAll(QuestProgress& p)
+    {
+        p.have = 0;
+        p.need = 1;
         if (!ou || !ou->player)
             return false;
         Faction* mine = ou->player->getFaction();
@@ -3408,52 +3509,63 @@ namespace
         for (size_t i = 0; i < all.size(); ++i)
             if (all[i]->getFaction() == mine && all[i]->getSpecialFunction() == BF_BED && buildProgress(all[i]) >= 1.0f)
                 ++beds;
-        return beds > 0 && beds >= int(ou->player->getAllPlayerCharacters().size());
+        int people = int(ou->player->getAllPlayerCharacters().size());
+        p.need = people > 0 ? people : 1;
+        p.have = beds < p.need ? beds : p.need;
+        std::ostringstream t;
+        t << beds << (beds == 1 ? " bed for " : " beds for ") << plural(people, "person", "people");
+        p.text = t.str();
+        return beds > 0 && beds >= people;
     }
 
-    bool qStockpile()
+    bool qStockpile(QuestProgress& p)
     {
-        return stockOf("Building Material") >= 100;
+        int have = stockOf("Building Material");
+        p.need = 100;
+        p.have = have < 100 ? have : 100;
+        p.text = outOf(have, 100);
+        return have >= 100;
     }
 
-    bool qOwnGuard()
+    bool qOwnGuard(QuestProgress& p)
     {
+        p.have = 0;
+        p.need = 15;
         if (!ou || !ou->player)
             return false;
+        float best = 0.0f;
         const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
         for (uint32_t i = 0; i < people.size(); ++i)
         {
             CharStats* st = people[i] ? people[i]->getStats() : NULL;
-            if (st && st->getStat(STAT_MELEE_ATTACK, false) >= 15.0f)
-                return true;
+            if (st && st->getStat(STAT_MELEE_ATTACK, false) > best)
+                best = st->getStat(STAT_MELEE_ATTACK, false);
         }
-        return false;
+        p.have = int(best) < 15 ? int(best) : 15;
+        std::ostringstream t;
+        t << "Best Melee Attack " << int(best) << " / 15";
+        p.text = t.str();
+        return best >= 15.0f;
     }
 
     struct Quest
     {
         const char* title;
-        const char* hint;
+        const char* hint; // one short line: the tracker doesn't wrap
         int reward;
-        bool (*done)();
+        bool (*done)(QuestProgress&);
     };
     const Quest QUESTS[] = {
-        {"Clear the old storm houses", "Dismantle the Old Storm Houses: their materials start your stockpile.", 200,
+        {"Clear the old storm houses", "Dismantle them: their materials start your stockpile.", 200,
          qStormHousesCleared},
-        {"Build a storage for building materials", "Build menu, Storage. Builders keep materials there.", 300,
-         qMaterialStorage},
-        {"Open a stone mine", "Stone is under the Hub now. Build a Stone Mine and set someone to work it.", 300,
-         qStoneMine},
-        {"Process stone into building materials", "Build a Stone Processor next to the mine.", 300, qStoneProcessor},
-        {"Take in your first citizen", "Drifters come to the gate every half day. Accept one in the Roster.", 200,
-         qFirstCitizen},
-        {"Give a citizen a job", "Roster: capture a profile from someone you've set up, then Assign it.", 300,
-         qCitizenWithJob},
-        {"A bed for everyone", "Build beds until everyone in the town has one.", 300, qBedsForAll},
+        {"Build a building-materials store", "Build menu, Storage. Builders draw from it.", 300, qMaterialStorage},
+        {"Open a stone mine", "Build a Stone Mine and set someone to work it.", 300, qStoneMine},
+        {"Process stone into materials", "Build a Stone Processor next to the mine.", 300, qStoneProcessor},
+        {"Take in your first citizen", "Drifters come to the gate. Accept one in the Roster.", 200, qFirstCitizen},
+        {"Give a citizen a job", "Roster: capture a profile, then Assign it.", 300, qCitizenWithJob},
+        {"A bed for everyone", "Build beds until everyone has one.", 300, qBedsForAll},
         {"Stockpile 100 building materials", "Keep the mine and processor running.", 500, qStockpile},
-        {"Ready a guard of your own", "The Outlaws won't stay for free. Train someone to Melee Attack 15, or take in "
-                                      "an Ex-guard from the gate.",
-         500, qOwnGuard},
+        {"Ready a guard of your own", "Train Melee Attack to 15, or take in an Ex-guard.", 500, qOwnGuard},
     };
     const int QUEST_COUNT = int(sizeof(QUESTS) / sizeof(QUESTS[0]));
 
@@ -3470,17 +3582,44 @@ namespace
         return out.str();
     }
 
-    int g_questAnnounced = -1; // the step last toasted this session
+    int g_questAnnounced = -1;     // the step last toasted since the world loaded
+    int g_questWarm = 0;           // main-loop ticks the Hub has been ours since then
+    TownBase* g_questHub = NULL;   // the Hub those counts belong to
+    QuestProgress g_questShown = {0, 1, ""}; // the current task's progress, for the tracker
+    int g_questJustDone = -1;      // a task just finished, shown as complete until...
+    DWORD g_questDoneUntil = 0;    // ...this GetTickCount()
+    const DWORD QUEST_DONE_SHOW_MS = 4000;
 
     void questTick()
     {
         if (!ou || !ou->player || !g_hub || !hubIsOurs())
+        {
+            g_questWarm = 0;
             return;
+        }
+        if (g_hub != g_questHub) // a different world loaded
+        {
+            g_questHub = g_hub;
+            g_questWarm = 0;
+            g_stormMax = 0;
+            g_stormLogged = false;
+            g_questAnnounced = -1;
+            g_questJustDone = -1;
+        }
         Contract* c = currentContract();
         if (!c || c->quest >= QUEST_COUNT || buildingCount(g_hub) == 0)
             return;
+        // Let a load settle, and its loading screen go, before judging or
+        // announcing anything: a new game's clean-up runs in these first ticks.
+        if (++g_questWarm < 3)
+            return;
+        if (int(g_questDoneUntil - GetTickCount()) > 0)
+            return; // the tracker is still showing the last task as complete
         const Quest& q = QUESTS[c->quest];
-        if (q.done())
+        QuestProgress p;
+        bool done = q.done(p);
+        g_questShown = p;
+        if (done)
         {
             int* money = factionMoney(ou->player->getFaction());
             if (money)
@@ -3488,11 +3627,13 @@ namespace
             std::ostringstream t;
             t << "Done: " << q.title << "  (+" << q.reward << " cats)";
             toast(t.str());
+            g_questJustDone = c->quest;
+            g_questDoneUntil = GetTickCount() + QUEST_DONE_SHOW_MS;
             ++c->quest;
             persistContract();
             if (c->quest >= QUEST_COUNT)
                 toast("The Hub stands on its own feet.");
-            return; // the next task is announced on the next tick
+            return; // the next task is announced once the tracker has moved on
         }
         if (g_questAnnounced != c->quest)
         {
@@ -3500,13 +3641,24 @@ namespace
             toast(std::string("Task: ") + q.title);
         }
     }
+    // The Town button sits centred above the squad panel (Kenshi's own layout,
+    // data/gui/layout/Kenshi_MainPanel.layout: SquadPanel at x 0.309, width
+    // 0.397, top 0.788). Above the Money / Day box Kenshi opens its building
+    // inspector, and left of that are the speed buttons; both got covered.
+    const float HUD_X = 0.457f, HUD_Y = 0.747f, HUD_W = 0.10f, HUD_H = 0.035f;
 
-    // The Town button sits above Kenshi's speed buttons, just left of the
-    // Money / Day box. Directly above that box is where Kenshi opens its
-    // building inspector (name, research, power, battery), so anything there
-    // gets covered. The tray stacks upwards from just above the button.
-    const float HUD_X = 0.751f, HUD_Y = 0.712f, HUD_W = 0.10f, HUD_H = 0.035f;
+    // Everything else lives in one column on the right edge, top down: the
+    // task tracker, then the tray's alerts, then toasts. Each part starts
+    // where the one above it ended (g_columnY).
+    const float COL_RIGHT = 0.995f, COL_W = 0.215f, COL_TOP = 0.09f, COL_GAP = 0.006f;
+    float g_columnY = COL_TOP;
 
+    // Width of a right-justified line for `text`, capped at the column's.
+    float lineWidth(const std::string& text)
+    {
+        float w = 0.02f + 0.0058f * float(text.size());
+        return w > COL_W ? COL_W : w;
+    }
     // ==== Notification tray ===================================================
     //
     // A short stack of clickable lines above the Town button: what needs
@@ -3677,7 +3829,8 @@ namespace
         showTab(0);
     }
 
-    // Right-justified against the screen edge, above the tray's top line.
+    // Right-justified against the screen edge, below the tray. Newest at the
+    // top.
     void updateToasts(bool inGame)
     {
         MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
@@ -3689,7 +3842,6 @@ namespace
                 g_toasts.erase(g_toasts.begin() + i);
             else
                 ++i;
-        float top = HUD_Y - (TRAY_LINES + 1) * (HUD_H + 0.004f) - 0.012f;
         for (size_t i = 0; i < TOAST_MAX; ++i)
         {
             if (!g_toastLines[i])
@@ -3700,56 +3852,239 @@ namespace
                                                                        MyGUI::Align::Default, "Main", name.str());
                 g_toastLines[i]->eventMouseButtonClick += MyGUI::newDelegate(onToastClick);
             }
-            // Newest at the bottom: slot 0 is the newest toast.
             bool show = inGame && i < g_toasts.size();
             g_toastLines[i]->setVisible(show);
             if (!show)
                 continue;
             const Toast& t = g_toasts[g_toasts.size() - 1 - i];
-            float w = 0.02f + 0.0058f * float(t.text.size());
-            if (w > 0.45f)
-                w = 0.45f;
-            g_toastLines[i]->setRealCoord(0.996f - w, top - (i + 1) * (HUD_H + 0.004f), w, HUD_H);
+            float w = lineWidth(t.text);
+            g_toastLines[i]->setRealCoord(COL_RIGHT - w, g_columnY, w, HUD_H);
             g_toastLines[i]->setCaption(t.text);
+            g_columnY += HUD_H + 0.004f;
         }
     }
-
     void updateTray(bool inGame)
     {
         MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
         if (!gui)
             return;
         if (!g_trayLines[0])
-        {
-            // Stacked upwards from just above the Town button.
             for (size_t i = 0; i <= TRAY_LINES; ++i)
             {
                 std::ostringstream name;
                 name << "KenshiTownTray" << i;
-                float y = HUD_Y - (i + 1) * (HUD_H + 0.004f);
-                g_trayLines[i] = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", HUD_X - 0.05f, y,
-                                                                      HUD_W + 0.05f, HUD_H, MyGUI::Align::Default,
-                                                                      "Main", name.str());
+                g_trayLines[i] = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.6f, 0.5f, 0.2f, HUD_H,
+                                                                      MyGUI::Align::Default, "Main", name.str());
                 g_trayLines[i]->eventMouseButtonClick += MyGUI::newDelegate(onTrayClick);
             }
-        }
         if (inGame)
             computeNotices();
-        for (size_t i = 0; i < TRAY_LINES; ++i)
+        for (size_t i = 0; i <= TRAY_LINES; ++i)
         {
-            bool show = inGame && i < g_notices.size();
+            std::string text;
+            if (i < TRAY_LINES && i < g_notices.size())
+                text = g_notices[i].text;
+            else if (i == TRAY_LINES && g_notices.size() > TRAY_LINES)
+            {
+                std::ostringstream t;
+                t << "+" << g_notices.size() - TRAY_LINES << " more";
+                text = t.str();
+            }
+            bool show = inGame && !text.empty();
             g_trayLines[i]->setVisible(show);
-            if (show)
-                g_trayLines[i]->setCaption(g_notices[i].text);
+            if (!show)
+                continue;
+            float w = lineWidth(text);
+            g_trayLines[i]->setRealCoord(COL_RIGHT - w, g_columnY, w, HUD_H);
+            g_trayLines[i]->setCaption(text);
+            g_columnY += HUD_H + 0.004f;
         }
-        bool more = inGame && g_notices.size() > TRAY_LINES;
-        g_trayLines[TRAY_LINES]->setVisible(more);
-        if (more)
+        g_columnY += COL_GAP;
+    }
+
+    // ==== Task tracker ==========================================================
+    //
+    // Pinned at the top of the right-hand column, the way city builders show
+    // objectives: a header with the chain's progress, the task, a one-line
+    // hint, a bar with the count in words, and the reward and what comes next.
+    // A finished task shows as complete (green, bar full, the reward) for a
+    // few seconds before the next one takes its place. "-" folds it to its
+    // header line.
+    //
+    // Two looks while Bill picks, switched by the "A/B" button: A sits in a
+    // Kenshi HUD panel, B is bare shadowed text over the world. Delete the
+    // loser once he has.
+
+    int g_trackerStyle = 0; // 0 = A (panel), 1 = B (bare)
+    bool g_trackerFolded = false;
+    MyGUI::Widget* g_trkPanel = NULL;
+    MyGUI::TextBox* g_trkHeader = NULL;
+    MyGUI::TextBox* g_trkTitle = NULL;
+    MyGUI::TextBox* g_trkHint = NULL;
+    MyGUI::TextBox* g_trkCount = NULL;
+    MyGUI::TextBox* g_trkFoot = NULL;
+    MyGUI::ProgressBar* g_trkBar = NULL;
+    MyGUI::Button* g_trkFold = NULL;
+    MyGUI::Button* g_trkStyle = NULL;
+
+    void updateTracker(bool inGame);
+
+    void onTrackerFold(MyGUI::WidgetPtr)
+    {
+        g_trackerFolded = !g_trackerFolded;
+        updateTracker(true);
+    }
+
+    void onTrackerStyle(MyGUI::WidgetPtr)
+    {
+        g_trackerStyle = 1 - g_trackerStyle;
+        actionLog(g_trackerStyle ? "[tracker] look B: bare text" : "[tracker] look A: panel");
+        updateTracker(true);
+    }
+
+    MyGUI::TextBox* trackerText(const char* skin, const char* name)
+    {
+        MyGUI::TextBox* t = MyGUI::Gui::getInstancePtr()->createWidgetReal<MyGUI::TextBox>(
+            skin, 0.6f, 0.1f, 0.2f, 0.02f, MyGUI::Align::Default, "Main", name);
+        t->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
+        t->setNeedMouseFocus(false);
+        return t;
+    }
+
+    void place(MyGUI::Widget* w, float x, float y, float width, float height)
+    {
+        w->setRealCoord(x, y, width, height);
+        w->setVisible(true);
+    }
+
+    void updateTracker(bool inGame)
+    {
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        if (!gui)
+            return;
+        if (!g_trkPanel)
         {
-            std::ostringstream t;
-            t << "+" << g_notices.size() - TRAY_LINES << " more";
-            g_trayLines[TRAY_LINES]->setCaption(t.str());
+            g_trkPanel = gui->createWidgetReal<MyGUI::Widget>("Kenshi_FloatingPanelSkin", 0.6f, 0.1f, 0.2f, 0.1f,
+                                                               MyGUI::Align::Default, "Main", "KenshiTownTrkPanel");
+            g_trkPanel->setNeedMouseFocus(false);
+            g_trkHeader = trackerText("Kenshi_TextboxStandardText_Small", "KenshiTownTrkHeader");
+            g_trkTitle = trackerText("Kenshi_TextboxStandardText", "KenshiTownTrkTitle");
+            g_trkHint = trackerText("Kenshi_TextboxStandardText_Small", "KenshiTownTrkHint");
+            g_trkBar = gui->createWidgetReal<MyGUI::ProgressBar>("Kenshi_ProgressBarFill", 0.6f, 0.1f, 0.1f, 0.01f,
+                                                                 MyGUI::Align::Default, "Main", "KenshiTownTrkBar");
+            g_trkBar->setProgressRange(1000);
+            g_trkBar->setNeedMouseFocus(false);
+            g_trkCount = trackerText("Kenshi_TextboxStandardText_Small", "KenshiTownTrkCount");
+            g_trkFoot = trackerText("Kenshi_TextboxStandardText_Small", "KenshiTownTrkFoot");
+            g_trkFold = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.6f, 0.1f, 0.02f, 0.02f,
+                                                             MyGUI::Align::Default, "Main", "KenshiTownTrkFold");
+            g_trkFold->eventMouseButtonClick += MyGUI::newDelegate(onTrackerFold);
+            g_trkStyle = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.6f, 0.1f, 0.02f, 0.02f,
+                                                              MyGUI::Align::Default, "Main", "KenshiTownTrkStyle");
+            g_trkStyle->setCaption("A/B");
+            g_trkStyle->eventMouseButtonClick += MyGUI::newDelegate(onTrackerStyle);
         }
+        MyGUI::Widget* all[] = {g_trkPanel, g_trkHeader, g_trkTitle, g_trkHint, g_trkBar,
+                                g_trkCount, g_trkFoot, g_trkFold, g_trkStyle};
+        for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); ++i)
+            all[i]->setVisible(false);
+        g_columnY = COL_TOP;
+
+        // What to show: the task in progress, or the one just finished.
+        Contract* c = inGame && g_hub ? currentContract() : NULL;
+        bool ours = inGame && g_hub && hubIsOurs();
+        bool justDone = g_questJustDone >= 0 && int(g_questDoneUntil - GetTickCount()) > 0;
+        int step = justDone ? g_questJustDone : (c ? c->quest : 0);
+        if (!inGame || (c && !justDone && c->quest >= QUEST_COUNT))
+            return; // nothing to track
+        if (ours && (!c || g_questWarm < 3) && !justDone)
+            return; // still settling after a load
+
+        const float x = COL_RIGHT - COL_W, pad = 0.008f, inner = COL_W - 2 * pad;
+        float y = COL_TOP + pad;
+        bool bare = g_trackerStyle == 1;
+        MyGUI::TextBox* texts[] = {g_trkHeader, g_trkTitle, g_trkHint, g_trkCount, g_trkFoot};
+        for (size_t i = 0; i < 5; ++i)
+            texts[i]->setTextShadow(bare);
+
+        std::ostringstream head;
+        if (!ours)
+            head << "KENSHI TOWN";
+        else
+            head << "GETTING STARTED   " << step + 1 << " / " << QUEST_COUNT;
+        g_trkHeader->setCaption(head.str());
+        g_trkHeader->setTextColour(MyGUI::Colour(0.85f, 0.78f, 0.6f));
+        place(g_trkHeader, x + pad, y, inner - 0.05f, 0.02f);
+        g_trkFold->setCaption(g_trackerFolded ? "+" : "-");
+        place(g_trkStyle, x + COL_W - pad - 0.047f, y, 0.026f, 0.02f);
+        place(g_trkFold, x + COL_W - pad - 0.018f, y, 0.018f, 0.02f);
+        y += 0.024f;
+
+        if (!g_trackerFolded)
+        {
+            const MyGUI::Colour green(0.55f, 0.85f, 0.45f), dim(0.72f, 0.70f, 0.64f), plain(0.95f, 0.93f, 0.88f);
+            std::string title, hint, count, foot;
+            float frac = 0.0f;
+            if (!ours)
+            {
+                title = "Claim the Hub";
+                hint = "Hold the deed, or use Claim on the Ledger tab.";
+            }
+            else
+            {
+                const Quest& q = QUESTS[step];
+                title = q.title;
+                hint = q.hint;
+                std::ostringstream f;
+                if (justDone)
+                {
+                    count = "Complete";
+                    frac = 1.0f;
+                    f << "+" << q.reward << " cats";
+                }
+                else
+                {
+                    count = g_questShown.text;
+                    frac = g_questShown.need > 0 ? float(g_questShown.have) / float(g_questShown.need) : 0.0f;
+                    f << "Reward " << q.reward << " cats";
+                }
+                if (step + 1 < QUEST_COUNT)
+                    f << "     Next: " << QUESTS[step + 1].title;
+                foot = f.str();
+            }
+            g_trkTitle->setCaption(title);
+            g_trkTitle->setTextColour(justDone ? green : plain);
+            place(g_trkTitle, x + pad, y, inner, 0.026f);
+            y += 0.027f;
+            g_trkHint->setCaption(hint);
+            g_trkHint->setTextColour(dim);
+            place(g_trkHint, x + pad, y, inner, 0.02f);
+            y += 0.024f;
+            if (ours)
+            {
+                if (frac < 0.0f)
+                    frac = 0.0f;
+                if (frac > 1.0f)
+                    frac = 1.0f;
+                g_trkBar->setProgressPosition(size_t(frac * 1000.0f));
+                place(g_trkBar, x + pad, y + 0.005f, inner * 0.5f, 0.011f);
+                g_trkCount->setCaption(count);
+                g_trkCount->setTextColour(justDone ? green : plain);
+                place(g_trkCount, x + pad + inner * 0.5f + 0.006f, y, inner * 0.5f - 0.006f, 0.02f);
+                y += 0.024f;
+                g_trkFoot->setCaption(foot);
+                g_trkFoot->setTextColour(justDone ? green : dim);
+                place(g_trkFoot, x + pad, y, inner, 0.02f);
+                y += 0.022f;
+            }
+        }
+        y += pad;
+        if (!bare)
+        {
+            g_trkPanel->setRealCoord(x, COL_TOP, COL_W, y - COL_TOP);
+            g_trkPanel->setVisible(true);
+        }
+        g_columnY = y + COL_GAP;
     }
 
     // ---- HUD: one Town button, always on screen while a game is loaded.
@@ -3772,6 +4107,7 @@ namespace
         bool inGame = ou && ou->player && ou->player->getAllPlayerCharacters().size() > 0;
         if (!g_hudTown && inGame && MyGUI::Gui::getInstancePtr())
             g_hudTown = hudButton(HUD_Y, "KenshiTownHud", "Town", onTownClick);
+        updateTracker(inGame); // the right-hand column, top down
         updateTray(inGame);
         updateToasts(inGame);
         if (g_hudTown)

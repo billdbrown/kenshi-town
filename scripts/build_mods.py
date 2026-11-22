@@ -144,7 +144,7 @@ def dev(db):
 
 
 ANKH_DIR = os.path.join(REPO, "build", "assets", "ankh")
-ANKH_FILES = ["ankh.mesh", "ankh.dds", "ankh_n.dds"]
+ANKH_FILES = ["ankh.mesh", "ankh.xml", "ankh.dds", "ankh_n.dds"]
 
 
 def ankh(db, mod):
@@ -153,7 +153,8 @@ def ankh(db, mod):
     A Building's look is a list of BuildingParts; each part is a mesh (Ogre
     .mesh, whose submesh material is just "StaticObject") plus a MaterialSpec
     naming the textures. Built on the Torch Post (a plain exterior prop on
-    the default build list), without its light and without collision.
+    the default build list), without its light. Without collision it could be
+    placed but nobody would build it.
     """
     where = ".\mods\%s\\" % mod.name
     mat = mod.new(base(db, SIGNS_MATERIAL), "Kenshi Town ankh")
@@ -164,7 +165,7 @@ def ankh(db, mod):
     torch = base(db, TORCH_POST)
     part = mod.new(db[torch.refs[b"parts"][0][0]], "Kenshi Town ankh part")
     part.set("file", "phs or mesh", where + "ankh.mesh")
-    part.set("file", "xml collision", "")
+    part.set("file", "xml collision", where + "ankh.xml")  # a box; see assets/collision.py
     part.refs[b"material"] = [(kmod._b(mat.sid), 0, 100, 0)]
 
     building = mod.new(torch, "Faience Ankh")
