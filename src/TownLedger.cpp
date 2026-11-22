@@ -402,17 +402,21 @@ namespace
         return ok;
     }
 
-    // ---- Which town a building joins. The building preview's `inTown` must
-    // be set or placing it fails with "Can't build too close to another town."
-    // It's filled by an unnamed game function at RVA 0x4D6D90 (KenshiLib's
-    // figureOutWhichTown address doesn't match this build), which in outline:
-    //   1. nearest town owned by the player faction, if in range;
-    //   2. else the town whose radius covers the spot, if its faction isPlayer;
-    //   3. else, near no town at all, a new player outpost.
-    // A Hub claimed in play passes; after a reload it stops passing even though
-    // it loads owned by Nameless. Until we know why, this hook makes the Hub
-    // the building's town whenever the game found none inside a Hub we own,
-    // and records what the lookups returned so the cause can be found.
+    // ---- Building inside the Hub. PreviewBuilding::inTown is the town a
+    // placement would INTRUDE on: the click handler (RVA 0x4E27E0 in the disk
+    // exe) refuses with "Can't build too close to another town." whenever it's
+    // set, and a null inTown means the spot is free (it shows blue vs green).
+    // The game flags a town there unless the town counts as the player's.
+    //
+    // The Hub loads as two town objects at one spot, the real one and an empty
+    // twin, and the twin stays Holy Nation Outlaws after a claim, so it got
+    // flagged. Fixes: syncHubTwins() gives the twin the Hub's owner, and the
+    // hook below clears inTown if it is ever our own Hub or its twin.
+    // (An earlier attempt did the opposite, filling inTown in, and caused the
+    // refusal it meant to fix.)
+    //
+    // The unnamed function at RVA 0x4D6D90 on disk (found by signature at
+    // 0x4D6300 in memory) also writes inTown but didn't run during placement.
 
     const uintptr_t WHICH_TOWN_RVA = 0x4D6D90;
     // The function's first 12 bytes in Kenshi 1.0.68, checked before hooking
@@ -437,9 +441,8 @@ namespace
         return out.str();
     }
 
-    // If the game found no town for a preview inside a Hub we own, give it the
-    // Hub, and record (once per change) what the game's own lookups saw.
-    long g_twinSwaps = 0;
+    // After the game decides which town a preview inside the Hub intrudes on,
+    // record it (once per change) and clear it if it's our own Hub.
     std::string g_lastAssigned;
 
     void giveHubIfTownless(PreviewBuilding* self)
@@ -462,46 +465,26 @@ namespace
             }
         }
 
-        // The Hub loads as two town objects at the same spot; the empty twin,
-        // still Holy Nation Outlaws, can be the one assigned. Swap in ours.
-        if (self->inTown && hubIsOurs() && self->inTown != g_hub->isTown() &&
-            self->inTown->getName() == g_hub->getName() && buildingCount(self->inTown) == 0)
+        if (!self->inTown)
         {
-            self->inTown = g_hub->isTown();
-            ++g_twinSwaps;
+            ++g_whichTownNullInHub;
             return;
         }
 
-        if (self->inTown)
+        // inTown is the town being intruded on, and the click handler refuses
+        // ("Can't build too close to another town.") whenever it's set; null
+        // means the spot is free. If the game flags our own Hub, or the Hub's
+        // empty twin, while the Hub is ours, clear it.
+        if (!hubIsOurs())
             return;
-        ++g_whichTownNullInHub;
-
-        // Once per change, record what the game's own lookups see here.
-        if (shou && shou->townList && ou && ou->player)
+        TownBase* flagged = self->inTown;
+        bool ourHub = flagged == g_hub;
+        for (size_t i = 0; i < g_hubTwins.size() && !ourHub; ++i)
+            ourHub = flagged == g_hubTwins[i];
+        if (ourHub)
         {
-            Ogre::Vector3 p = self->getPosition();
-            Faction* mine = ou->player->getFaction();
-            std::ostringstream diag;
-            diag << "nearest town owned by us: "
-                 << describeTown(shou->townList->getNearestTown(p, mine, NULL, NULL, TOWN_NULL))
-                 << "; town covering this spot: "
-                 << describeTown(shou->townList->getNearestWithinItsRadius(p, false))
-                 << "; covering, skipping player towns: "
-                 << describeTown(shou->townList->getNearestWithinItsRadius(p, true))
-                 << "; the Hub: " << describeTown(g_hub)
-                 << "; player faction isPlayer " << (mine && mine->isPlayer ? "set" : "NULL");
-            if (diag.str() != g_whichTownDiag)
-            {
-                g_whichTownDiag = diag.str();
-                DebugLog("TownLedger: [building town lookup] " + g_whichTownDiag);
-            }
-        }
-
-        if (hubIsOurs())
-        {
-            self->inTown = g_hub->isTown();
-            if (self->inTown)
-                ++g_whichTownFixed;
+            self->inTown = NULL;
+            ++g_whichTownFixed;
         }
     }
 
@@ -1075,8 +1058,8 @@ namespace
         out << "  base map reads: " << g_baseCalls << "\n";
 
         out << "\n3. Placement\n";
-        out << "  building town: " << g_whichTownCalls << " lookups, " << g_whichTownNullInHub
-            << " found no town in the Hub, " << g_whichTownFixed << " given the Hub\n";
+        out << "  building town: " << g_whichTownCalls << " previews, " << g_whichTownNullInHub
+            << " clear in the Hub, " << g_whichTownFixed << " cleared of our own Hub\n";
         out << "  checks " << g_placeChecks << ", in Hub " << g_placeHubChecks
             << ", refused in Hub " << g_placeHubRefused << "\n";
         if (g_placeChecks)
@@ -1106,7 +1089,7 @@ namespace
         if (g_hub)
             out << "Hub: " << factionName(g_hub->getFaction()) << ", " << buildingCount(g_hub)
                 << " buildings" << (hubIsOurs() ? " (ours)" : "") << "\nBuild fixes: " << g_whichTownFixed
-                << " given the Hub, " << g_twinSwaps << " twin swaps, of " << g_whichTownCalls << " previews\n";
+                << " of " << g_whichTownCalls << " previews cleared (our Hub flagged as foreign)\n";
         else
             out << "Hub not found\n";
         out << "Population: " << people.size() << "\n\n";
