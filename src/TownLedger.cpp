@@ -937,44 +937,28 @@ namespace
         actionLog("[capture role] from " + g_roleFrom + ": " + describeJobs(c));
     }
 
-    // Add one standing job (permajob) to a citizen. Character::addJob with
-    // (shift=false, add=true) added nothing on 2026-11-22, so try the flag
-    // combinations, then the path the game's own right-click menu takes:
-    // select just this character (bypassing our selection lock) and call
-    // PlayerInterface::addJobSelectedCharacters. Returns which way worked.
+    // Add one standing job to a citizen with Character::addJob(shift=false,
+    // add=true). On 2026-11-22 this made Double mine the stone mine, but his
+    // job list read empty straight afterwards, so the list is checked again a
+    // few seconds later (checkAssignedJobs) instead of retrying other ways,
+    // which would stack duplicate jobs.
+
+    int g_checkJobsAtFrame = -1;
 
     std::string addStandingJob(Character* c, const RoleJob& job)
     {
-        int before = c->getPermajobCount();
-        const bool flags[][2] = {{false, true}, {true, true}, {true, false}, {false, false}};
-        for (int i = 0; i < 4; ++i)
-        {
-            c->addJob(job.type, job.subject, flags[i][0], flags[i][1], job.location);
-            if (c->getPermajobCount() > before)
-            {
-                std::ostringstream how;
-                how << "addJob(shift=" << flags[i][0] << ", add=" << flags[i][1] << ")";
-                return how.str();
-            }
-        }
+        c->addJob(job.type, job.subject, false, true, job.location);
+        return "added";
+    }
 
-        // The UI path, on a selection of exactly this character.
-        lektor<RootObject*> prior;
-        ou->player->getAllSelectedObjects(prior, CHARACTER);
-        for (uint32_t i = 0; i < prior.size(); ++i)
-            objectSelected_orig(ou->player, prior[i], false);
-        objectSelected_orig(ou->player, c, true);
-        std::string how = "none worked";
-        for (int shift = 0; shift < 2 && c->getPermajobCount() <= before; ++shift)
-        {
-            ou->player->addJobSelectedCharacters(job.type, job.subject, shift != 0, true, job.location);
-            if (c->getPermajobCount() > before)
-                how = shift ? "UI path (shift)" : "UI path";
-        }
-        objectSelected_orig(ou->player, c, false);
-        for (uint32_t i = 0; i < prior.size(); ++i)
-            objectSelected_orig(ou->player, prior[i], true);
-        return how;
+    void checkAssignedJobs()
+    {
+        std::ostringstream note;
+        note << "job lists after assigning:";
+        for (std::set<Character*>::iterator it = g_citizens.begin(); it != g_citizens.end(); ++it)
+            note << "\n  " << (*it)->getName() << ": " << describeJobs(*it) << " (doing: "
+                 << currentActivity(*it) << ")";
+        actionLog("[" + note.str() + "]");
     }
 
     void onAssignRoleClick(MyGUI::WidgetPtr)
@@ -1001,6 +985,7 @@ namespace
             note << "\n  " << c->getName() << " now: " << describeJobs(c);
         }
         actionLog("[" + note.str() + "]");
+        g_checkJobsAtFrame = g_frame + 180; // about three seconds
     }
 
     std::string buildCitizenReport()
@@ -1451,6 +1436,12 @@ namespace
         {
             g_loggedScale = true;
             logReport("first ore reading in Hub");
+        }
+
+        if (g_checkJobsAtFrame >= 0 && g_frame >= g_checkJobsAtFrame)
+        {
+            g_checkJobsAtFrame = -1;
+            checkAssignedJobs();
         }
 
         bool down = (GetAsyncKeyState(TOGGLE_KEY) & 0x8000) != 0;
