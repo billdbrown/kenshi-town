@@ -62,11 +62,15 @@ namespace TaskerFields
 #include <mygui/MyGUI_TabItem.h>
 #include <mygui/MyGUI_TextBox.h>
 #include <mygui/MyGUI_ProgressBar.h>
+#include <mygui/MyGUI_ImageBox.h>
+#include <mygui/MyGUI_RenderManager.h>
 #include <windows.h>
 #include <mmsystem.h>
 #include <ogre/OgreRoot.h>
 #include <ogre/OgreRenderSystem.h>
 #include <ogre/OgreRenderTarget.h>
+#include <ogre/OgreCamera.h>
+#include <ogre/OgreResourceGroupManager.h>
 #include <ogre/OgreFrameListener.h>
 #include <ogre/OgreSceneManager.h>
 #include <ogre/OgreSceneNode.h>
@@ -4668,6 +4672,200 @@ namespace
         }
     }
 
+    // ==== Overhead icons (prototype) ============================================
+    //
+    // Small icons that sit over things in the world, for a city-builder read
+    // of the town (Bill, 2026-11-23): the bar, the town hall, traders, and the
+    // squads that mean trouble. Each frame a world position is projected to
+    // the screen with the camera's own matrices and a MyGUI image is put
+    // there, on the "Back" layer so Kenshi's panels cover it. The town hall's
+    // icon is clickable and opens the Kenshi Town window: the first step
+    // towards menus that hang off places.
+    //
+    // Placeholder art (scripts/assets/icons.py). Which things get an icon,
+    // their size and the distance they show from are Bill's to settle.
+
+    enum IconKind { ICON_BAR, ICON_HQ, ICON_TRADER, ICON_HOSTILE, ICON_KINDS };
+    const char* ICON_TEXTURE[ICON_KINDS] = {"kt_icon_bar.png", "kt_icon_hq.png", "kt_icon_trader.png",
+                                            "kt_icon_hostile.png"};
+    const char* ICON_NAME[ICON_KINDS] = {"bar", "town hall", "trader", "hostile squad"};
+    const size_t ICON_MAX = 32;
+    const int ICON_PIXELS = 38;
+    const float ICON_FAR = 9000.0f;       // not drawn beyond 900 m
+    const float ICON_PEOPLE = 4500.0f;    // people within 450 m of the camera's centre
+
+    struct IconTarget
+    {
+        Ogre::Vector3 at;
+        IconKind kind;
+    };
+    MyGUI::ImageBox* g_iconWidgets[ICON_MAX];
+    int g_iconShown[ICON_MAX]; // the kind each widget currently shows, -1 none
+    bool g_iconsMade = false;
+    bool g_iconsOn = true;
+    int g_iconCount[ICON_KINDS] = {0, 0, 0, 0};       // targets found last frame
+    int g_iconOnScreen[ICON_KINDS] = {0, 0, 0, 0};    // of those, drawn
+    MyGUI::IntPoint g_iconFirst[ICON_KINDS];           // where the first of each kind was drawn
+    Ogre::Vector4 g_iconClip[ICON_KINDS];              // clip-space position of the last of each kind (debug)
+    Ogre::Vector3 g_iconCamPos;                        // the camera's position last frame (debug)
+    Ogre::Vector3 g_iconShift;                         // world minus render space, last frame (debug)
+
+    void onIconClick(MyGUI::WidgetPtr w)
+    {
+        for (size_t i = 0; i < ICON_MAX; ++i)
+            if (g_iconWidgets[i] == w && g_iconShown[i] == ICON_HQ)
+                showTab(0);
+    }
+
+    void collectIconTargets(std::vector<IconTarget>& out)
+    {
+        out.clear();
+        if (!g_hub)
+            return;
+        std::vector<Building*> all;
+        hubBuildings(all);
+        bool hq = false;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            IconTarget t;
+            t.at = all[i]->getPosition();
+            t.at.y += 130.0f; // over the roof
+            if (all[i]->getName() == "Bar")
+                t.kind = ICON_BAR;
+            else if (!hq && !all[i]->isDestroyed() && all[i]->getName() == "Longhouse" &&
+                     buildProgress(all[i]) >= 1.0f)
+            {
+                t.kind = ICON_HQ; // the Town Hall: for now, the first Longhouse standing
+                hq = true;
+            }
+            else
+                continue;
+            out.push_back(t);
+        }
+
+        const lektor<Character*>& mine = ou->player->getAllPlayerCharacters();
+        Character* me = mine.size() > 0 ? mine[0] : NULL;
+        if (!me)
+            return;
+        lektor<RootObject*> found;
+        ou->getCharactersWithinSphere(found, ou->player->getCameraCenter(), ICON_PEOPLE, ICON_PEOPLE, 0.0f, 150, 150,
+                                      NULL);
+        std::set<const void*> squads; // one icon per squad
+        for (uint32_t i = 0; i < found.size(); ++i)
+        {
+            Character* c = static_cast<Character*>(found[i]);
+            if (!c || c->getFaction() == me->getFaction() || c->isDead() || c->isDown())
+                continue;
+            IconTarget t;
+            if (c->isEnemy(me, false))
+                t.kind = ICON_HOSTILE;
+            else if (currentActivity(c) == "Shopkeeper" ||
+                     factionName(c->getFaction()).find("Trader") != std::string::npos ||
+                     factionName(c->getFaction()).find("Nomad") != std::string::npos)
+                t.kind = ICON_TRADER;
+            else
+                continue;
+            const void* squad = squadKeyOf(c);
+            if (squad && !squads.insert(squad).second)
+                continue;
+            t.at = c->getPosition();
+            t.at.y += 26.0f; // over the head
+            out.push_back(t);
+        }
+    }
+
+    void updateIcons()
+    {
+        MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+        bool inGame = ou && ou->player && ou->player->getAllPlayerCharacters().size() > 0;
+        if (!gui || (!g_iconsMade && !inGame))
+            return;
+        if (!g_iconsMade)
+        {
+            // MyGUI looks textures up in Ogre's "GUI" resource group; the mod's
+            // folder is only in "General" ("Texture 'kt_icon_bar.png' not found").
+            try
+            {
+                Ogre::ResourceGroupManager::getSingleton().addResourceLocation("mods/TownLedger", "FileSystem", "GUI");
+            }
+            catch (...)
+            {
+                ErrorLog("TownLedger: could not add mods/TownLedger to the GUI resource group");
+            }
+            for (size_t i = 0; i < ICON_MAX; ++i)
+            {
+                std::ostringstream name;
+                name << "KenshiTownIcon" << i;
+                g_iconWidgets[i] = gui->createWidget<MyGUI::ImageBox>("ImageBox", 0, 0, ICON_PIXELS, ICON_PIXELS,
+                                                                      MyGUI::Align::Default, "Middle", name.str());
+                g_iconWidgets[i]->setVisible(false);
+                g_iconWidgets[i]->eventMouseButtonClick += MyGUI::newDelegate(onIconClick);
+                g_iconShown[i] = -1;
+            }
+            g_iconsMade = true;
+        }
+        for (int k = 0; k < ICON_KINDS; ++k)
+            g_iconCount[k] = g_iconOnScreen[k] = 0;
+
+        std::vector<IconTarget> targets;
+        CameraClass* cam = inGame && g_iconsOn ? ou->player->getCamera() : NULL;
+        if (cam && cam->camera)
+            collectIconTargets(targets);
+        size_t used = 0;
+        if (cam && cam->camera)
+        {
+            const Ogre::Matrix4 vp = cam->camera->getProjectionMatrix() * cam->camera->getViewMatrix(true);
+            const MyGUI::IntSize view = MyGUI::RenderManager::getInstance().getViewSize();
+            // Kenshi draws the world shifted so the camera stays near Ogre's
+            // origin (the camera read 943,2237,-147 while looking at world
+            // -50904,1570,3410). The camera's centre node is the looked-at
+            // point in that shifted space, so the difference is the shift.
+            // While the camera follows something (double-click, or Kenshi's
+            // "focus on"), getCameraCenter() goes stale and the followed
+            // object's position is the centre instead. Height isn't shifted.
+            Ogre::Vector3 shift = Ogre::Vector3::ZERO;
+            if (cam->center)
+            {
+                Ogre::Vector3 centre = ou->player->getCameraCenter();
+                if (cam->objectCurrentlyFollowing.isValid())
+                    if (RootObject* followed = cam->objectCurrentlyFollowing.getRootObject())
+                        centre = followed->getPosition() + cam->objectCurrentlyFollowingOffset;
+                shift = centre - cam->center->_getDerivedPosition();
+                shift.y = 0.0f;
+            }
+            g_iconShift = shift;
+            for (size_t i = 0; i < targets.size() && used < ICON_MAX; ++i)
+            {
+                ++g_iconCount[targets[i].kind];
+                Ogre::Vector3 local = targets[i].at - shift;
+                Ogre::Vector4 clip = vp * Ogre::Vector4(local.x, local.y, local.z, 1.0f);
+                g_iconClip[targets[i].kind] = clip;
+                g_iconCamPos = cam->camera->getDerivedPosition();
+                if (clip.w < 1.0f || clip.w > ICON_FAR)
+                    continue; // behind the camera, or too far
+                float nx = clip.x / clip.w, ny = clip.y / clip.w;
+                if (nx < -1.0f || nx > 1.0f || ny < -1.0f || ny > 1.0f)
+                    continue;
+                int px = int((nx * 0.5f + 0.5f) * view.width) - ICON_PIXELS / 2;
+                int py = int((0.5f - ny * 0.5f) * view.height) - ICON_PIXELS;
+                MyGUI::ImageBox* w = g_iconWidgets[used];
+                if (g_iconShown[used] != targets[i].kind)
+                {
+                    w->setImageTexture(ICON_TEXTURE[targets[i].kind]);
+                    w->setNeedMouseFocus(targets[i].kind == ICON_HQ);
+                    g_iconShown[used] = targets[i].kind;
+                }
+                w->setCoord(px, py, ICON_PIXELS, ICON_PIXELS);
+                w->setVisible(true);
+                if (g_iconOnScreen[targets[i].kind]++ == 0)
+                    g_iconFirst[targets[i].kind] = MyGUI::IntPoint(px, py);
+                ++used;
+            }
+        }
+        for (size_t i = used; i < ICON_MAX; ++i)
+            g_iconWidgets[i]->setVisible(false);
+    }
+
     // ==== Autotest ==============================================================
     //
     // A scenario in mods/TownLedger/autotest/scenario.txt turns the plugin into
@@ -5479,6 +5677,42 @@ namespace
             atWrite("INFO", t.str());
             return true;
         }
+        if (cmd == "icons") // icons [on|off]: what the overhead icons found and drew last frame
+        {
+            if (rest == "on" || rest == "off")
+                g_iconsOn = rest == "on";
+            std::ostringstream t;
+            t << "icons " << (g_iconsOn ? "on" : "off") << ":";
+            for (int k = 0; k < ICON_KINDS; ++k)
+            {
+                t << " " << ICON_NAME[k] << " " << g_iconOnScreen[k] << "/" << g_iconCount[k];
+                if (g_iconCount[k])
+                    t << " [clip " << int(g_iconClip[k].x) << "," << int(g_iconClip[k].y) << "," << int(g_iconClip[k].z)
+                      << "," << int(g_iconClip[k].w) << "]";
+                if (g_iconOnScreen[k])
+                    t << " (first at " << g_iconFirst[k].left << "," << g_iconFirst[k].top << ")";
+                t << ";";
+            }
+            t << " shift " << int(g_iconShift.x) << "," << int(g_iconShift.y) << "," << int(g_iconShift.z) << ";";
+            t << " camera at " << int(g_iconCamPos.x) << "," << int(g_iconCamPos.y) << "," << int(g_iconCamPos.z)
+              << ", looking at " << int(ou->player->getCameraCenter().x) << "," << int(ou->player->getCameraCenter().y)
+              << "," << int(ou->player->getCameraCenter().z);
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "click_icon") // click_icon: what clicking the town hall's icon does
+        {
+            bool had = false;
+            for (size_t i = 0; i < ICON_MAX; ++i)
+                if (g_iconsMade && g_iconWidgets[i]->getVisible() && g_iconShown[i] == ICON_HQ)
+                {
+                    onIconClick(g_iconWidgets[i]);
+                    had = true;
+                    break;
+                }
+            atCheck(had && g_main && g_main->getVisible(), "town hall icon clicked: Kenshi Town window open");
+            return true;
+        }
         if (cmd == "nearby") // nearby [metres]: who is around the founder, and who is hostile to him
         {
             float metres = 60;
@@ -5781,6 +6015,7 @@ namespace
     {
         mainLoop_orig(thisptr, time);
         autotestTick(); // only does anything when a scenario file is present
+        updateIcons();
 
         ++g_frame;
         if (g_frame % FIND_HUB_EVERY_N_FRAMES == 1)

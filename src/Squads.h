@@ -16,3 +16,6 @@ std::string putInSquad(Character* c, const std::string& squad);
 
 // The name of the squad a character is in; empty if none.
 std::string squadNameOf(Character* c);
+
+// An opaque key that is the same for every member of a squad (NULL if none).
+const void* squadKeyOf(Character* c);

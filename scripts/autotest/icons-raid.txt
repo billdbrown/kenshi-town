@@ -1,0 +1,42 @@
+# The hostile-squad icon: wait for the Dust Bandit raid from the opening view.
+load kt-test
+wait_ready
+speed 3
+wait 70
+icons
+nearby 120
+screenshot raid-0
+wait 7
+icons
+nearby 120
+screenshot raid-1
+wait 7
+icons
+nearby 120
+screenshot raid-2
+wait 7
+icons
+nearby 120
+screenshot raid-3
+wait 7
+icons
+nearby 120
+screenshot raid-4
+wait 7
+icons
+nearby 120
+screenshot raid-5
+wait 7
+icons
+nearby 120
+screenshot raid-6
+wait 7
+icons
+nearby 120
+screenshot raid-7
+wait 7
+icons
+nearby 120
+screenshot raid-8
+wait 7
+quit

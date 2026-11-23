@@ -64,3 +64,8 @@ std::string squadNameOf(Character* c)
 {
     return (c && c->platoon) ? c->platoon->getName() : std::string();
 }
+
+const void* squadKeyOf(Character* c)
+{
+    return c ? static_cast<const void*>(c->platoon) : NULL;
+}

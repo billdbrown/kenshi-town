@@ -61,6 +61,8 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `assign <person> <profile>` | the Roster's Assign |
 | `set_stat <stat number> <value>` | the founder's stored stat (2 = Melee Attack) |
 | `beds` | every bed in the Hub and what it's inside |
+| `icons [on\|off]` | overhead icons: found/drawn per kind, with clip-space and camera debug |
+| `click_icon` | what clicking the town hall's icon does (opens the Kenshi Town window) |
 | `who` | what the founder is doing, his jobs, distance to `current` |
 | `construct <name\|current> [secs]` | does builders' work on it until complete (default 60 s) |
 | `set_task <n>` | jumps the guided start to task n |

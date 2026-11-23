@@ -72,7 +72,22 @@ This file is the loop's memory: update the status lines as you go, and commit it
    icons, and screenshots for Bill. Find out first whether vanilla already draws such icons
    and can be reused. Icon art, sizes, which groups get one and at what distance are Bill's
    to choose: offer options, don't settle them.
-   - status: not started
+   - status: **prototype working** (2026-11-23), scenarios `icons` and `icons-raid`.
+     Screenshots in `build/autotest/icons-*/` (`pair.png` shows H, T and B in place).
+     - Icons over the Bar (B), its shopkeeper (T), the first standing Longhouse (H) and one per
+       hostile squad (!), following the world as the camera moves. Clicking H opens the Kenshi
+       Town window (checked by the harness).
+     - How: Kenshi draws the world shifted so the camera's centre is Ogre's origin, so a world
+       position has that centre subtracted (the followed object's position while the camera
+       follows something) before the camera's view and projection matrices are applied.
+       MyGUI looks textures up in Ogre's "GUI" resource group, so `mods/TownLedger` is added
+       to it. Placeholder PNGs are in `mod/TownLedger/` (made by `scripts/assets/icons.py`).
+     - Vanilla: no overhead icons found in the game data, the GUI images or KenshiLib's
+       headers. If you've seen trader or bandit icons in game, they may come from a mod.
+     - The hostile icon is proven by numbers only (1 squad of 15 Dust Bandits, drawn at
+       1652,201): on screen it sat behind the tracker panel, and the raid's "drop your
+       weapons" dialogue pauses the game, so they came no closer.
+     - Not measured: the cost of listing up to 150 nearby characters every frame.
 
 If there is time left: the garrison contract (jump the clock past grace; fee, warnings,
 guards leaving), the selection lock, the ankh (construct it, use it, screenshot the bow).
@@ -120,5 +135,17 @@ guards leaving), the selection lock, the ankh (construct it, use it, screenshot 
 - **"Storage: Building Materials is full" shows as an alert** all through the guided start.
   For a stockpile that's good news, not a problem. Drop it for resource stores?
 - A naked founder's pack takes 3 Building Materials, 5 Iron Plates or 1 Sleeping Bag at a time.
+- **Overhead icons: your choices.** (1) Art: the placeholders are a coloured disc and a
+  letter. (2) Which things: now the Bar, shopkeepers and anyone in a faction named
+  "Trader"/"Nomad", the Town Hall, hostile squads. Wanted next: slavers, caravans, the gate,
+  stores? (3) Size and range: 38 px, people within 450 m of the camera's centre, nothing
+  beyond 900 m. (4) Layering: icons sit above Kenshi's own HUD panels where they overlap and
+  below ours; a layer under everything ("Back") drew nothing. (5) What the Town Hall icon
+  opens: now the whole Kenshi Town window; a smaller "headquarters" menu is the idea.
+- **The Town tab says "Garrison: 0 Outlaws"** in `kt-test`, and no Holy Nation Outlaws were
+  near the founder during the raids. The hired garrison may not exist in a new game at all.
+  Not investigated yet.
+- The Town button draws on top of Kenshi's conversation window (seen during the Dust Boss's
+  shakedown).
 - Idea, not built: an alert "builders can't find building materials" when a site needs
   materials and no Building Materials store holds any (a general chest doesn't count).

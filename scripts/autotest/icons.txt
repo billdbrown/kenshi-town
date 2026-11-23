@@ -1,0 +1,35 @@
+# Overhead icons (prototype), all from the view the save opens with: the bar
+# and its shopkeeper, the town hall once a Longhouse stands (its icon opens
+# the Kenshi Town window), and the Dust Bandit raid that arrives about 90 s in
+# at fast speed. No safe mode here: the raiders are the point.
+# (Kenshi's "focus on" puts the camera 4 m from a building at ground level,
+# where an icon over its roof is off the top of the screen, so it isn't used.)
+load kt-test
+wait_ready
+wait 2
+icons
+screenshot icons-0-start
+unruin Longhouse
+wait 2
+icons
+screenshot icons-1-town-hall
+click_icon
+wait 1
+screenshot icons-2-clicked
+speed 3
+wait 50
+icons
+screenshot icons-3-raid
+wait 8
+icons
+screenshot icons-4-raid
+wait 8
+icons
+screenshot icons-5-raid
+wait 8
+icons
+screenshot icons-6-raid
+wait 8
+icons
+screenshot icons-7-raid
+quit
