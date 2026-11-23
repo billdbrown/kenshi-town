@@ -2732,9 +2732,12 @@ namespace
     const char* CLEANUP_FILE = "mods\\TownLedger\\hub_cleanup.txt";
 
     // Bill's choice (2026-11-22): keep the Longhouses, the Stationhouse and the
-    // Snailhouse; lose every other house and the broken street props.
+    // Snailhouse; lose every other house and the broken street props. Except
+    // the Storm Houses (2026-11-23): removing or repairing one leaves its
+    // broken-building debris behind (probably Havok fragments; nothing found
+    // yet can clear it), so they stay as ruins, the one by the bar included.
     const char* CLEANUP_DEFAULT[] = {
-        "Old Storm House", "Small Shack", "Bughouse", "L-House", "Residential Small",
+        "Small Shack", "Bughouse", "L-House", "Residential Small",
         "Holy Sinner Torch Broken", "Holy Street Torch Broken", "Holy Street Torch Snapped",
         "Emperor Statue Broken", "Wind Generator Broken"};
     const size_t CLEANUP_DEFAULT_COUNT = sizeof(CLEANUP_DEFAULT) / sizeof(CLEANUP_DEFAULT[0]);
@@ -3849,7 +3852,7 @@ namespace
     {
         p.have = 0;
         p.need = 1;
-        p.text = "Ruined: select one, press Repair";
+        p.text = "Ruined"; // the hint line says what to do; the count column is narrow
         std::vector<Building*> all;
         hubBuildings(all);
         // Progress alone isn't enough: a repaired ruin reached 100% while
@@ -4003,8 +4006,8 @@ namespace
         bool (*done)(QuestProgress&);
     };
     const Quest QUESTS[] = {
-        {"Clear the old storm houses", "Dismantle them: their materials start your stockpile.", 200,
-         qStormHousesCleared},
+        // (The first task was "Clear the old storm houses" until 2026-11-23: see
+        // CLEANUP_DEFAULT on why the Storm Houses are left alone.)
         {"Repair a Longhouse: your Town Hall", "Select a ruined Longhouse, press Repair. Builders do the rest.", 300,
          qTownHall},
         {"Set up a research bench", "Build a Small Research Bench inside the Town Hall.", 300, qResearchBench},
