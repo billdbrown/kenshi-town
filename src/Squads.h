@@ -13,3 +13,6 @@ class Character;
 // squad if there isn't one. Returns a short account for the log; empty when
 // the character was already there.
 std::string putInSquad(Character* c, const std::string& squad);
+
+// The name of the squad a character is in; empty if none.
+std::string squadNameOf(Character* c);

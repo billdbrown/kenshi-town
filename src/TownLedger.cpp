@@ -2068,11 +2068,26 @@ namespace
         Faction* faction = arrivalFaction();
         if (!tmpl || !faction)
             return 0;
-        Ogre::Vector3 gate = g_hub->getPositionOutsideTownGates(200.0f);
-        if (gate.squaredLength() < 1.0f) // no gate: the edge of town, eastwards
+        // Just outside one of the Hub's gates. (Kenshi's own
+        // getPositionOutsideTownGates returns the town centre for the Hub, so
+        // arrivals used to appear in the middle of town: autotest, 2026-11-23.)
+        Ogre::Vector3 centre = g_hub->getPosition();
+        Ogre::Vector3 gate = centre;
+        gate.x += g_hubRadius * 0.9f; // no gate found: the edge of town, eastwards
         {
-            gate = g_hub->getPosition();
-            gate.x += g_hubRadius * 0.9f;
+            std::vector<Building*> all, gates;
+            hubBuildings(all);
+            for (size_t i = 0; i < all.size(); ++i)
+                if (all[i]->getName().find("Gate") != std::string::npos)
+                    gates.push_back(all[i]);
+            if (!gates.empty())
+            {
+                Ogre::Vector3 g = gates[rand() % gates.size()]->getPosition();
+                Ogre::Vector3 out(g.x - centre.x, 0.0f, g.z - centre.z);
+                float len = sqrt(out.x * out.x + out.z * out.z);
+                if (len > 1.0f)
+                    gate = Ogre::Vector3(g.x + out.x / len * 150.0f, g.y, g.z + out.z / len * 150.0f);
+            }
         }
         int want = 1 + rand() % 3;
         int came = 0;
@@ -2337,22 +2352,16 @@ namespace
         lookAt(gateSelected(&i));
     }
 
-    void onGateAccept(MyGUI::WidgetPtr)
+    bool acceptArrival(size_t i)
     {
-        size_t i = 0;
-        Character* c = gateSelected(&i);
-        if (!c)
-        {
-            actionLog("[arrivals] pick someone at the gate first");
-            refreshRoster();
-            return;
-        }
+        if (i >= g_gate.size())
+            return false;
+        Character* c = g_gate[i].who;
         bool joined = ou->player->recruit(c, false);
         if (!joined)
         {
             actionLog("[arrivals] " + c->getName() + " would not join (recruit refused)");
-            refreshRoster();
-            return;
+            return false;
         }
         g_gate.erase(g_gate.begin() + i);
         setNameTag(c, CITIZEN_TAG);
@@ -2360,21 +2369,40 @@ namespace
         syncSquad(c);
         ou->player->objectSelected(c, false);
         actionLog("[arrivals] " + bareName(c) + " joined the Hub as a citizen: give them a profile");
+        return true;
+    }
+
+    // Turned away, they leave: before 2026-11-23 they were only dropped from
+    // the list and stood outside the gate for good.
+    bool turnAwayArrival(size_t i)
+    {
+        if (i >= g_gate.size())
+            return false;
+        Character* c = g_gate[i].who;
+        std::string name = c->getName();
+        g_gate.erase(g_gate.begin() + i);
+        ou->destroy(c, false, "Kenshi Town: turned away at the gate");
+        actionLog("[arrivals] turned " + name + " away");
+        return true;
+    }
+
+    void onGateAccept(MyGUI::WidgetPtr)
+    {
+        size_t i = 0;
+        if (!gateSelected(&i))
+            actionLog("[arrivals] pick someone at the gate first");
+        else
+            acceptArrival(i);
         refreshRoster();
     }
 
     void onGateTurnAway(MyGUI::WidgetPtr)
     {
         size_t i = 0;
-        Character* c = gateSelected(&i);
-        if (!c)
-        {
+        if (!gateSelected(&i))
             actionLog("[arrivals] pick someone at the gate first");
-            refreshRoster();
-            return;
-        }
-        g_gate.erase(g_gate.begin() + i);
-        actionLog("[arrivals] turned " + c->getName() + " away");
+        else
+            turnAwayArrival(i);
         refreshRoster();
     }
 
@@ -4704,10 +4732,32 @@ namespace
         return best;
     }
 
+    float g_atLastDistance = 0.0f; // metres from the Hub centre of the last arrival `gate` listed
+
     Character* atFounder()
     {
         const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
         return people.size() > 0 ? people[0] : NULL;
+    }
+
+    // Highest stored stat, and how many distinct stats are stored above 8
+    // (First Aid and both Vet entries share one value; getStat adds bonuses).
+    void atStatSummary(Character* c, float& top, int& over8)
+    {
+        top = 0.0f;
+        over8 = 0;
+        CharStats* st = c->getStats();
+        std::set<float*> seen;
+        for (int k = STAT_STRENGTH; st && k < STAT_END; ++k)
+        {
+            float* v = &st->getStatRef(StatsEnumerated(k));
+            if (!seen.insert(v).second)
+                continue;
+            if (*v > top)
+                top = *v;
+            if (*v > 8.5f)
+                ++over8;
+        }
     }
 
     bool atComplete(Building* b)
@@ -5145,6 +5195,58 @@ namespace
             atWrite("INFO", "job given; " + bareName(f) + " now has: " + describeJobs(f));
             return true;
         }
+        if (cmd == "arrive") // arrive: a group at the gate now, as the 12-hour tick would bring
+        {
+            int came = spawnArrivals();
+            std::ostringstream t;
+            t << "arrivals: " << came << " came, " << g_gate.size() << " at the gate";
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "gate") // gate: who is waiting, with their background and stats
+        {
+            for (size_t i = 0; i < g_gate.size(); ++i)
+            {
+                Character* c = g_gate[i].who;
+                CharStats* st = c->getStats();
+                float top = 0.0f;
+                int over8 = 0;
+                atStatSummary(c, top, over8);
+                Ogre::Vector3 p = c->getPosition(), h = g_hub->getPosition();
+                std::ostringstream t;
+                t << "gate " << i << ": " << c->getName() << ", " << g_gate[i].background << ", " << topSkills(c, 3)
+                  << "; highest stat " << int(top) << ", " << over8 << " stats above 8; faction "
+                  << factionName(c->getFaction()) << "; "
+                  << int(sqrt((p.x - h.x) * (p.x - h.x) + (p.z - h.z) * (p.z - h.z)) / 10.0f) << " m from the Hub centre";
+                atWrite("INFO", t.str());
+                g_atLastDistance = sqrt((p.x - h.x) * (p.x - h.x) + (p.z - h.z) * (p.z - h.z)) / 10.0f;
+            }
+            if (g_gate.empty())
+                atWrite("INFO", "gate: empty");
+            return true;
+        }
+        if (cmd == "accept" || cmd == "turn_away") // accept <i> / turn_away <i>
+        {
+            size_t i = 0;
+            std::istringstream(rest) >> i;
+            bool ok = cmd == "accept" ? acceptArrival(i) : turnAwayArrival(i);
+            atCheck(ok, cmd + " " + rest);
+            return true;
+        }
+        if (cmd == "people") // people: every player character, with tag and squad
+        {
+            const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+            for (uint32_t i = 0; i < people.size(); ++i)
+            {
+                Character* c = people[i];
+                std::ostringstream t;
+                t << "person " << i << ": '" << c->getName() << "', tag '" << nameTag(c) << "', squad '"
+                  << squadNameOf(c) << "', " << (g_citizens.count(c) ? "citizen" : "retinue") << ", doing '"
+                  << currentActivity(c) << "'";
+                atWrite("INFO", t.str());
+            }
+            return true;
+        }
         if (cmd == "who") // who: what the founder is doing and has been told to do
         {
             Character* f = atFounder();
@@ -5231,6 +5333,37 @@ namespace
             {
                 Building* b = atFind(arg, false);
                 atCheck((b != NULL) == (what == "exists"), what + " " + arg);
+            }
+            else if (what == "gate" || what == "people" || what == "citizens") // expect gate <n> etc.
+            {
+                int n = 0;
+                std::istringstream(arg) >> n;
+                int have = what == "gate" ? int(g_gate.size())
+                           : what == "people" ? int(ou->player->getAllPlayerCharacters().size())
+                                              : int(g_citizens.size());
+                std::ostringstream t;
+                t << what << " is " << have << ", expected " << n;
+                atCheck(have == n, t.str());
+            }
+            else if (what == "gate_outside") // the last arrival listed by `gate` stands outside the walls
+            {
+                std::ostringstream t;
+                t << "last arrival is " << int(g_atLastDistance) << " m from the Hub centre (want 25 or more)";
+                atCheck(g_atLastDistance >= 25.0f, t.str());
+            }
+            else if (what == "gate_modest") // every arrival: top stat 14-24, at most 3 stats above 8
+            {
+                bool ok = !g_gate.empty();
+                std::ostringstream t;
+                for (size_t i = 0; i < g_gate.size(); ++i)
+                {
+                    float top = 0.0f;
+                    int over8 = 0;
+                    atStatSummary(g_gate[i].who, top, over8);
+                    t << " [" << int(top) << " top, " << over8 << " above 8]";
+                    ok = ok && top >= 14.0f && top <= 24.5f && over8 <= 3;
+                }
+                atCheck(ok, "arrivals are modest:" + t.str());
             }
             else if (what == "none_stuck") // nothing of ours at 100% but not complete
             {

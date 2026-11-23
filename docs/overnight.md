@@ -36,7 +36,14 @@ This file is the loop's memory: update the status lines as you go, and commit it
      - `getPermajobCount` reads 0 for jobs given with `addJob` even while they work.
 2. **Arrivals.** Force an arrival, accept one and turn one away; check names, tags,
    stats within the intended range, squad placement, the toast and the HUD count.
-   - status: not started
+   - status: **done** (2026-11-23), scenario `arrivals` passes 13/13. Two bugs fixed:
+     - arrivals appeared in the middle of town (`getPositionOutsideTownGates` returns the
+       Hub's centre); they now spawn 15 m outside one of the Hub's gates;
+     - Turn away only dropped them from the list and they stood there for good; they now
+       leave (removed).
+     Confirmed: one background stands out (top stat 14-24, two or three stats above 8),
+     accept gives "[Citizen] Name" in the Citizens squad, the toast, the tray alert and
+     "Town (3 at gate)" all show.
 3. **A full guided-start run.** Tasks 1 to 10 driven end to end by a scenario, each
    completing only when its condition is really met, with a screenshot of the tracker at
    each step. Keep it as the regression test.
@@ -66,5 +73,10 @@ guards leaving), the selection lock, the ankh (construct it, use it, screenshot 
   Engineer job he builds it every time here. When it failed for you: was the store itself
   finished (not still a construction site)? Was the mine a site, or built but not being mined
   (mining is a separate job)? Was he given Engineer by shift-clicking, and on what?
+- **Arrivals are forgotten on a reload.** Who is waiting at the gate is only in memory, so
+  after loading a save they're still standing there as plain Drifters, not in the Roster.
+  Options: remember them by name tag (as citizens are), or send them away on load.
+- Turned-away drifters now vanish on the spot. Walking off would look better; it needs an
+  order to leave and a later clean-up. Worth it?
 - Idea, not built: an alert "builders can't find building materials" when a site needs
   materials and no Building Materials store holds any (a general chest doesn't count).

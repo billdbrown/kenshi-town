@@ -59,3 +59,8 @@ std::string putInSquad(Character* c, const std::string& squad)
     out << "moved to squad " << squad << (c->platoon == to ? "" : " (FAILED)");
     return out.str();
 }
+
+std::string squadNameOf(Character* c)
+{
+    return (c && c->platoon) ? c->platoon->getName() : std::string();
+}

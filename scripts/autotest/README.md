@@ -43,6 +43,12 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `place_near <stringId> <dx> <dz> [done]` | a site (or a finished building) beside the founder; becomes `current` |
 | `stock <count> <item name>` | items into the current building |
 | `job <task number> [name\|current]` | a standing job for the founder (125 = Engineer, 87 = operate machinery) |
+| `arrive` | a group of drifters at the gate now |
+| `gate` | who is waiting: background, top skills, stats, distance from the Hub centre |
+| `accept <i>` / `turn_away <i>` | what the Roster's buttons do, by gate index |
+| `people` | every player character: name, tag, squad, citizen or retinue, activity |
+| `expect gate\|people\|citizens <n>` | counts |
+| `expect gate_modest` / `expect gate_outside` | arrivals' stats in range; last listed arrival outside the walls |
 | `who` | what the founder is doing, his jobs, distance to `current` |
 | `construct <name\|current> [secs]` | does builders' work on it until complete (default 60 s) |
 | `set_task <n>` | jumps the guided start to task n |

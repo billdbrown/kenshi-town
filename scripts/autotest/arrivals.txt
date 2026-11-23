@@ -1,0 +1,29 @@
+# Arrivals at the gate: a group comes, their stats are modest with one
+# background standing out, one is accepted (becomes a tagged citizen in the
+# Citizens squad), the rest are turned away (and leave).
+load kt-test
+wait_ready
+expect gate 0
+expect people 1
+arrive
+gate
+expect gate_modest
+expect gate_outside
+arrive
+arrive
+gate
+expect gate 3
+wait 2
+screenshot arrivals-toast
+accept 0
+people
+expect people 2
+expect citizens 1
+expect gate 2
+turn_away 0
+turn_away 0
+expect gate 0
+wait 3
+people
+expect people 2
+quit
