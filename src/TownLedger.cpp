@@ -68,6 +68,10 @@ namespace TaskerFields
 #include <ogre/OgreRenderSystem.h>
 #include <ogre/OgreRenderTarget.h>
 #include <ogre/OgreFrameListener.h>
+#include <ogre/OgreSceneManager.h>
+#include <ogre/OgreSceneNode.h>
+#include <ogre/OgreEntity.h>
+#include <ogre/OgreMesh.h>
 #pragma comment(lib, "winmm.lib")
 #include <kenshi/gui/DatapanelGUI.h>
 #include <kenshi/gui/DataPanelLine.h>
@@ -112,6 +116,7 @@ namespace
     void startContractOnClaim();               // the per-game record, further down
     void toast(const std::string& text);       // HUD toasts, further down
     std::string plural(int n, const char* one, const char* many); // the tray, further down
+    std::string lowerCase(std::string s);                           // the guided start, further down
     const int REFRESH_EVERY_N_FRAMES = 30;
     const int FIND_HUB_EVERY_N_FRAMES = 120;
 
@@ -3192,6 +3197,72 @@ namespace
             ou->player->focusCamera(b->getPosition());
     }
 
+    // ---- Leftover wreckage.
+    //
+    // A ruined building shows extra "destroyed" meshes: a ruined Storm House's
+    // Extras part becomes Storm_House_01_Extras_destroyed.mesh, fallen pipes
+    // and sheeting. Removing or dismantling the ruin leaves those entities in
+    // the scene, floating where the house stood (Bill, 2026-11-22; identified
+    // by drawing that mesh, which matched his screenshot piece for piece).
+    // They aren't buildings, so nothing in the game can select or clear them.
+    // Any *_destroyed.mesh entity in the Hub with no ruin left near it is
+    // hidden. Visual only, so it's done again after every load.
+    std::string hideOrphanWreckage(bool hide)
+    {
+        Ogre::Root* root = Ogre::Root::getSingletonPtr();
+        if (!g_hub || !root)
+            return "no Hub or no Ogre";
+        Ogre::Vector3 hub = g_hub->getPosition();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        int ruinsNear = 0, orphans = 0;
+        std::map<std::string, int> names;
+        Ogre::SceneManagerEnumerator::SceneManagerIterator managers = root->getSceneManagerIterator();
+        while (managers.hasMoreElements())
+        {
+            Ogre::SceneManager* sm = managers.getNext();
+            Ogre::SceneManager::MovableObjectIterator it = sm->getMovableObjectIterator("Entity");
+            while (it.hasMoreElements())
+            {
+                Ogre::Entity* e = static_cast<Ogre::Entity*>(it.getNext());
+                if (!e || !e->getVisible() || e->getMesh().isNull())
+                    continue;
+                std::string mesh = e->getMesh()->getName();
+                if (lowerCase(mesh).find("_destroyed") == std::string::npos)
+                    continue;
+                Ogre::SceneNode* node = e->getParentSceneNode();
+                if (!node)
+                    continue;
+                Ogre::Vector3 at = node->_getDerivedPosition();
+                float dx = at.x - hub.x, dz = at.z - hub.z;
+                if (dx * dx + dz * dz > 1500.0f * 1500.0f)
+                    continue;
+                bool owned = false;
+                for (size_t i = 0; i < all.size() && !owned; ++i)
+                {
+                    Ogre::Vector3 b = all[i]->getPosition();
+                    float bx = b.x - at.x, bz = b.z - at.z;
+                    owned = all[i]->isDestroyed() && bx * bx + bz * bz < 40.0f * 40.0f;
+                }
+                if (owned)
+                {
+                    ++ruinsNear;
+                    continue;
+                }
+                ++orphans;
+                ++names[mesh];
+                if (hide)
+                    e->setVisible(false);
+            }
+        }
+        std::ostringstream out;
+        out << "wreckage: " << orphans << (hide ? " hidden" : " orphaned") << ", " << ruinsNear
+            << " still on their ruins";
+        for (std::map<std::string, int>::iterator n = names.begin(); n != names.end(); ++n)
+            out << (n == names.begin() ? ": " : ", ") << n->second << " x " << n->first;
+        return out.str();
+    }
+
     // Every Hub building, nearest the camera first, to mods/TownLedger/
     // hub_buildings.txt: names for things the clean-up should know about
     // (the props a dismantled storm house left floating, 2026-11-22).
@@ -3973,7 +4044,10 @@ namespace
         if (++g_questWarm < 3)
             return;
         if (g_questWarm == 3)
+        {
             dumpHubBuildings(); // a fresh list of the Hub after every load, for diagnosis
+            actionLog("[hub] " + hideOrphanWreckage(true));
+        }
         if (int(g_questDoneUntil - GetTickCount()) > 0)
             return; // the tracker is still showing the last task as complete
         const Quest& q = QUESTS[c->quest];
@@ -4735,6 +4809,11 @@ namespace
                 return false;
             bool ok = atScreenshot(rest);
             atWrite(ok ? "SHOT" : "INFO", rest + ".png" + (ok ? "" : " failed"));
+            return true;
+        }
+        if (cmd == "wreckage") // wreckage [hide]: report orphaned ruin meshes in the Hub
+        {
+            atWrite("INFO", hideOrphanWreckage(rest == "hide"));
             return true;
         }
         if (cmd == "dump")

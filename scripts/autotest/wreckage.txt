@@ -1,0 +1,11 @@
+# Wreckage a removed ruin leaves floating (Storm House "destroyed extras"):
+# the plugin hides orphaned *_destroyed.mesh entities after a load. Report what
+# it finds before and after, and photograph the spot.
+load kt-test
+wait_ready
+wreckage
+wreckage hide
+wreckage
+camera_on Storm House
+screenshot wreckage-storm-house
+quit
