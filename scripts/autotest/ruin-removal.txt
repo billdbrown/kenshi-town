@@ -1,9 +1,12 @@
+# Since 2026-11-23 the plugin clears squatter camps after a load, so A's spot
+# should come out clean. (wait 20: the camp furniture is swept 20 s after load.)
 # Does removing a ruin leave its wreckage floating, and does un-ruining it
 # first avoid that? kt-test has two ruined Storm Houses: A is removed as a
 # ruin, B is un-ruined (the instant repair) and then removed. Kenshi's own
 # focus, frozen 1.5 s in (where it frames the house), for each pair of shots.
 load kt-test
 wait_ready
+wait 20
 camera_on Storm House
 wait 1.5
 camera_hold

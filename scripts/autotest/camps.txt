@@ -1,0 +1,19 @@
+# Squatter camps in an existing save: photograph a ruined Storm House's spot,
+# clear the camps (debris batch + camp furniture inside ruins), photograph
+# again from the same frozen view, then remove the house and photograph the
+# spot where the trash used to float.
+load kt-test
+wait_ready
+camera_on Storm House
+wait 1.5
+camera_hold
+furniture current
+screenshot e-0-before
+clear_camps
+wait 3
+furniture current
+screenshot e-1-camps-cleared
+remove current
+wait 4
+screenshot e-2-house-removed
+quit

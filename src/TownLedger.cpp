@@ -3219,74 +3219,56 @@ namespace
             ou->player->focusCamera(b->getPosition());
     }
 
-    // ---- Leftover wreckage.
+    // ---- Squatter camps.
     //
-    // A ruined building shows extra "destroyed" meshes: a ruined Storm House's
-    // Extras part becomes Storm_House_01_Extras_destroyed.mesh, fallen pipes
-    // and sheeting. Removing or dismantling the ruin leaves those entities in
-    // the scene, floating where the house stood (Bill, 2026-11-22; identified
-    // by drawing that mesh, which matched his screenshot piece for piece).
-    // They aren't buildings, so nothing in the game can select or clear them.
-    // Any *_destroyed.mesh entity in the Hub with no ruin left near it is
-    // hidden. Visual only, so it's done again after every load.
-    //
-    // DOESN'T WORK YET (autotest "scene", 2026-11-22): building parts aren't
-    // Ogre Entities. Of ~830 entities only doors are (Storm_House_01_Door.mesh);
-    // walls, extras and wreckage are baked into combined geometry, so there is
-    // nothing here to hide. Kept for its report until a better route is found.
-    std::string hideOrphanWreckage(bool hide)
+    // What Bill called "debris" (2026-11-22/23) is the Hub squatters' camp
+    // dressing: their squad brings Kenshi's "nest housecamp", which scatters
+    // trash (curved sheets, pipe stubs) over a ruined house's floor, adds camp
+    // beds, a campfire, stools and invisible sitting spots, and drops junk
+    // loot. The trash is drawn in the town's NestBatcher (Town::spawnDebris),
+    // so it belonged to no building and outlived any repair or removal.
+    // TownLedger.mod takes the squatters out of the Hub's residents, so a new
+    // game has no camps; this clears the ones an existing save already has:
+    // the town's debris batch, and camp furniture inside ruined houses (never
+    // furniture the player put in a house they've repaired). The loot items
+    // are ordinary items and stay.
+    std::string clearSquatterCamps()
     {
-        Ogre::Root* root = Ogre::Root::getSingletonPtr();
-        if (!g_hub || !root)
-            return "no Hub or no Ogre";
-        Ogre::Vector3 hub = g_hub->getPosition();
+        if (!g_hub || !ou)
+            return "no Hub";
+        std::vector<TownBase*> parts(1, g_hub);
+        parts.insert(parts.end(), g_hubTwins.begin(), g_hubTwins.end());
+        int batches = 0;
+        for (size_t i = 0; i < parts.size(); ++i)
+            if (parts[i]->nestBatcher)
+            {
+                ou->destroy(parts[i]->nestBatcher);
+                parts[i]->nestBatcher = NULL;
+                ++batches;
+            }
+        const char* campNames[] = {"Camp Bed", "Campfire", "Stool", "Sitting spot (invisible)"};
         std::vector<Building*> all;
         hubBuildings(all);
-        int ruinsNear = 0, orphans = 0;
-        std::map<std::string, int> names;
-        Ogre::SceneManagerEnumerator::SceneManagerIterator managers = root->getSceneManagerIterator();
-        while (managers.hasMoreElements())
+        std::map<std::string, int> removed;
+        for (size_t i = 0; i < all.size(); ++i)
         {
-            Ogre::SceneManager* sm = managers.getNext();
-            Ogre::SceneManager::MovableObjectIterator it = sm->getMovableObjectIterator("Entity");
-            while (it.hasMoreElements())
-            {
-                Ogre::Entity* e = static_cast<Ogre::Entity*>(it.getNext());
-                if (!e || !e->getVisible() || e->getMesh().isNull())
-                    continue;
-                std::string mesh = e->getMesh()->getName();
-                if (lowerCase(mesh).find("_destroyed") == std::string::npos)
-                    continue;
-                Ogre::SceneNode* node = e->getParentSceneNode();
-                if (!node)
-                    continue;
-                Ogre::Vector3 at = node->_getDerivedPosition();
-                float dx = at.x - hub.x, dz = at.z - hub.z;
-                if (dx * dx + dz * dz > 1500.0f * 1500.0f)
-                    continue;
-                bool owned = false;
-                for (size_t i = 0; i < all.size() && !owned; ++i)
-                {
-                    Ogre::Vector3 b = all[i]->getPosition();
-                    float bx = b.x - at.x, bz = b.z - at.z;
-                    owned = all[i]->isDestroyed() && bx * bx + bz * bz < 40.0f * 40.0f;
-                }
-                if (owned)
-                {
-                    ++ruinsNear;
-                    continue;
-                }
-                ++orphans;
-                ++names[mesh];
-                if (hide)
-                    e->setVisible(false);
-            }
+            if (!all[i]->isDestroyed())
+                continue; // only ruins: a repaired house's furniture is the player's
+            std::vector<Building*> inside;
+            allFurniture(all[i], inside);
+            for (size_t k = 0; k < inside.size(); ++k)
+                for (size_t n = 0; n < sizeof(campNames) / sizeof(campNames[0]); ++n)
+                    if (inside[k]->getName() == campNames[n])
+                    {
+                        ++removed[inside[k]->getName()];
+                        ou->dynamicDestroyBuilding(hand(inside[k]));
+                        break;
+                    }
         }
         std::ostringstream out;
-        out << "wreckage: " << orphans << (hide ? " hidden" : " orphaned") << ", " << ruinsNear
-            << " still on their ruins";
-        for (std::map<std::string, int>::iterator n = names.begin(); n != names.end(); ++n)
-            out << (n == names.begin() ? ": " : ", ") << n->second << " x " << n->first;
+        out << "squatter camps: " << batches << " debris batch" << (batches == 1 ? "" : "es") << " cleared";
+        for (std::map<std::string, int>::iterator it = removed.begin(); it != removed.end(); ++it)
+            out << (it == removed.begin() ? "; removed " : ", ") << it->second << " x " << it->first;
         return out.str();
     }
 
@@ -4047,6 +4029,39 @@ namespace
     DWORD g_questDoneUntil = 0;    // ...this GetTickCount()
     const DWORD QUEST_DONE_SHOW_MS = 4000;
 
+    // Saves from before the squatters were taken out of the Hub still have
+    // their camps. The debris batch appears some time into a load (at 10 s it
+    // wasn't there yet, 2026-11-23), so it's cleared whenever one exists; the
+    // camp furniture is swept once, 20 s in, when the Hub has finished loading.
+    TownBase* g_campsSweptFor = NULL;
+    DWORD g_campsLoadedAt = 0;
+
+    void squatterCampsTick()
+    {
+        if (!g_hub || !hubIsOurs())
+            return;
+        bool batch = g_hub->nestBatcher != NULL;
+        for (size_t i = 0; i < g_hubTwins.size() && !batch; ++i)
+            batch = g_hubTwins[i]->nestBatcher != NULL;
+        if (g_campsSweptFor != g_hub)
+        {
+            if (!g_campsLoadedAt)
+                g_campsLoadedAt = GetTickCount();
+            if (GetTickCount() - g_campsLoadedAt < 20000)
+            {
+                if (batch)
+                    actionLog("[hub] " + clearSquatterCamps());
+                return;
+            }
+            g_campsSweptFor = g_hub;
+            g_campsLoadedAt = 0;
+            actionLog("[hub] " + clearSquatterCamps());
+            return;
+        }
+        if (batch)
+            actionLog("[hub] " + clearSquatterCamps());
+    }
+
     void questTick()
     {
         if (!ou || !ou->player || !g_hub || !hubIsOurs())
@@ -4073,7 +4088,6 @@ namespace
         if (g_questWarm == 3)
         {
             dumpHubBuildings(); // a fresh list of the Hub after every load, for diagnosis
-            actionLog("[hub] " + hideOrphanWreckage(true));
         }
         if (int(g_questDoneUntil - GetTickCount()) > 0)
             return; // the tracker is still showing the last task as complete
@@ -4877,6 +4891,11 @@ namespace
             atWrite(ok ? "SHOT" : "INFO", rest + ".png" + (ok ? "" : " failed"));
             return true;
         }
+        if (cmd == "clear_camps")
+        {
+            atWrite("INFO", clearSquatterCamps());
+            return true;
+        }
         if (cmd == "scene") // scene: every movable-object type, how many, how many in the Hub, sample names
         {
             Ogre::Root* root = Ogre::Root::getSingletonPtr();
@@ -4933,11 +4952,6 @@ namespace
                     t << " " << *n << ";";
                 atWrite("INFO", t.str());
             }
-            return true;
-        }
-        if (cmd == "wreckage") // wreckage [hide]: report orphaned ruin meshes in the Hub
-        {
-            atWrite("INFO", hideOrphanWreckage(rest == "hide"));
             return true;
         }
         if (cmd == "dump")
@@ -5258,6 +5272,7 @@ namespace
             deedTick();
             contractTick();
             questTick();
+            squatterCampsTick();
             hookBuildingPanels();
             finishRepairsTick();
             if (hubIsOurs())

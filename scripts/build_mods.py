@@ -7,7 +7,8 @@ Two mods:
 
   TownLedger     shipped alongside the plugin (same folder, same name):
                    - a "Kenshi Town" new-game start at the Hub
-                   - the Hub's Shinobi Thieves Guild removed from its residents
+                   - the Hub's Shinobi Thieves Guild and squatters removed from
+                     its residents
   KenshiTownDev  development only, never shipped:
                    - every research free, instant, at the first bench tier,
                      and with no prerequisites
@@ -37,6 +38,7 @@ DEPENDENCIES = ["gamedata.base", "Newwworld.mod", "rebirth.mod", "Dialogue.mod"]
 WANDERER_START = ("1980-gamedata.base", "Wanderer")
 THE_HUB = ("18919-Newwworld.mod", "The Hub")
 THIEVES_GUILD = ("51709-rebirth.mod", "Thieves Guild")
+HUB_SQUATTERS_TOWN = ("44426-rebirth.mod", "hub squatters")
 WANDERER_SQUAD = ("45550-gamedata.base", "startoff- Wanderer squad")
 TORCH_POST = ("5437-new_furniture_otto.mod", "Torch Post")
 SIGNS_MATERIAL = ("973-gamedata.base", "signs")
@@ -124,6 +126,18 @@ def town_ledger(db):
     if not any(r[0] == thieves.sid for r in db[THE_HUB[0]].refs.get(b"residents", [])):
         raise SystemExit("Thieves Guild is no longer a resident of The Hub")
     hub.delete_ref("residents", thieves.sid)
+
+    # No squatters either. Their squad brings the "nest housecamp" set
+    # dressing: trash scattered over a ruined house's floor (curved sheets,
+    # pipe stubs), camp beds, a campfire and junk loot (cups, jugs, damaged
+    # books). It belongs to the town, not the house, so repairing or removing
+    # the house left the trash behind, floating if the floor went (Bill's
+    # "debris", 2026-11-22/23; found through Town::spawnDebris and the nest's
+    # records). The Hub's settlers come through Kenshi Town's gate instead.
+    squatters = base(db, HUB_SQUATTERS_TOWN)
+    if not any(r[0] == squatters.sid for r in db[THE_HUB[0]].refs.get(b"residents", [])):
+        raise SystemExit("hub squatters are no longer residents of The Hub")
+    hub.delete_ref("residents", squatters.sid)
     return mod
 
 
