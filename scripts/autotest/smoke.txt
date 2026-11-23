@@ -1,0 +1,10 @@
+# Does the harness work at all: load the test save, look at the Hub, list its
+# buildings, check nothing inherited is stuck at 100%.
+load kt-test
+wait_ready
+speed 1
+dump
+expect none_stuck
+camera_on Longhouse
+screenshot hub-longhouse
+quit

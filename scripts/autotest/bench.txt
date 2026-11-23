@@ -1,0 +1,17 @@
+# The research-bench task completes only when the bench is built, not when
+# it's placed. (Placed outdoors near the camera: createBuilding doesn't
+# enforce the interior rule.)
+load kt-test
+wait_ready
+set_task 3
+wait 4
+expect task 3
+camera_on Longhouse
+place 1875-gamedata.base 60 0
+wait 6
+expect task 3
+construct current 60
+wait 6
+expect task 4
+screenshot bench-built
+quit

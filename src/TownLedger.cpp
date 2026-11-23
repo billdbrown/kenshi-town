@@ -63,6 +63,9 @@ namespace TaskerFields
 #include <mygui/MyGUI_ProgressBar.h>
 #include <windows.h>
 #include <mmsystem.h>
+#include <ogre/OgreRoot.h>
+#include <ogre/OgreRenderSystem.h>
+#include <ogre/OgreRenderTarget.h>
 #pragma comment(lib, "winmm.lib")
 #include <kenshi/gui/DatapanelGUI.h>
 #include <kenshi/gui/DataPanelLine.h>
@@ -4461,11 +4464,420 @@ namespace
         }
     }
 
+    // ==== Autotest ==============================================================
+    //
+    // A scenario in mods/TownLedger/autotest/scenario.txt turns the plugin into
+    // an autopilot. scripts/autotest.py writes it, launches Kenshi and removes
+    // it again afterwards; without the file nothing here runs. One command per
+    // line, '#' for comments (the commands are listed in scripts/autotest/
+    // README.md). The plugin loads a save from the main menu, runs the steps
+    // against the live game, writes autotest/out/report.txt and screenshots,
+    // and ends Kenshi.
+
+    const char* AT_SCENARIO = "mods\\TownLedger\\autotest\\scenario.txt";
+    const char* AT_REPORT = "mods\\TownLedger\\autotest\\out\\report.txt";
+    const std::string AT_OUT = "mods\\TownLedger\\autotest\\out\\";
+
+    bool g_atChecked = false;           // looked for a scenario yet
+    bool g_atActive = false;
+    std::vector<std::string> g_atLines;
+    size_t g_atPc = 0;                  // the line being run
+    DWORD g_atStepStart = 0;            // GetTickCount() when it started
+    bool g_atStepBegun = false;
+    int g_atPass = 0, g_atFail = 0;
+    Building* g_atCurrent = NULL;       // the building `repair`/`place`/`pick` last chose
+    int g_atFramesSeen = 0;
+    DWORD g_atReadySince = 0;
+
+    void atWrite(const std::string& kind, const std::string& text)
+    {
+        FILE* f = fopen(AT_REPORT, "a");
+        if (f)
+        {
+            fprintf(f, "%s\t%s\n", kind.c_str(), text.c_str());
+            fclose(f);
+        }
+        DebugLog("TownLedger: [autotest] " + kind + " " + text);
+    }
+
+    void atCheck(bool ok, const std::string& what)
+    {
+        if (ok)
+            ++g_atPass;
+        else
+            ++g_atFail;
+        atWrite(ok ? "PASS" : "FAIL", what);
+    }
+
+    void atFinish(const std::string& why)
+    {
+        std::ostringstream out;
+        out << "pass=" << g_atPass << " fail=" << g_atFail << " (" << why << ")";
+        atWrite("DONE", out.str());
+        g_atActive = false;
+        // Nothing is saved: the test save stays as it was for the next run.
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+
+    void atLoadScenario()
+    {
+        g_atChecked = true;
+        FILE* f = fopen(AT_SCENARIO, "r");
+        if (!f)
+            return;
+        char line[512];
+        while (fgets(line, sizeof(line), f))
+        {
+            std::string l(line);
+            while (!l.empty() && (l[l.size() - 1] == '\n' || l[l.size() - 1] == '\r' || l[l.size() - 1] == ' '))
+                l.erase(l.size() - 1);
+            size_t start = l.find_first_not_of(" \t");
+            if (start == std::string::npos || l[start] == '#')
+                continue;
+            g_atLines.push_back(l.substr(start));
+        }
+        fclose(f);
+        g_atActive = !g_atLines.empty();
+        if (g_atActive)
+            atWrite("INFO", "scenario loaded");
+    }
+
+    bool atInGame()
+    {
+        return ou && ou->player && ou->player->getAllPlayerCharacters().size() > 0;
+    }
+
+    // Hub buildings and the furniture inside them whose name contains `name`,
+    // nearest the camera first. "current" is the last one a step chose.
+    Building* atFind(const std::string& name, bool ruinsOnly)
+    {
+        std::vector<Building*> all;
+        hubBuildings(all);
+        if (name == "current")
+            return std::find(all.begin(), all.end(), g_atCurrent) != all.end() ? g_atCurrent : NULL;
+        std::vector<Building*> inside;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            if (all[i]->isDestroyed() || !all[i]->hasInterior())
+                continue;
+            lektor<Building*> f;
+            all[i]->findAllFurnitureWithFunction(f, BF_RESEARCH);
+            all[i]->findAllFurnitureWithFunction(f, BF_BED);
+            for (uint32_t k = 0; k < f.size(); ++k)
+                if (f[k])
+                    inside.push_back(f[k]);
+        }
+        all.insert(all.end(), inside.begin(), inside.end());
+        Ogre::Vector3 eye = ou->player->getCameraCenter();
+        Building* best = NULL;
+        float bestD = 0.0f;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            if (lowerCase(all[i]->getName()).find(lowerCase(name)) == std::string::npos)
+                continue;
+            if (ruinsOnly && !all[i]->isDestroyed())
+                continue;
+            Ogre::Vector3 p = all[i]->getPosition();
+            float d = (p.x - eye.x) * (p.x - eye.x) + (p.z - eye.z) * (p.z - eye.z);
+            if (!best || d < bestD)
+            {
+                best = all[i];
+                bestD = d;
+            }
+        }
+        return best;
+    }
+
+    bool atComplete(Building* b)
+    {
+        Building::ConstructionState* own = b->getBuildState_ActualNonShared();
+        return !b->isDestroyed() && own && own->isComplete;
+    }
+
+    bool atScreenshot(const std::string& name)
+    {
+        Ogre::Root* root = Ogre::Root::getSingletonPtr();
+        Ogre::RenderSystem* rs = root ? root->getRenderSystem() : NULL;
+        if (!rs)
+            return false;
+        Ogre::RenderSystem::RenderTargetIterator it = rs->getRenderTargetIterator();
+        while (it.hasMoreElements())
+        {
+            Ogre::RenderTarget* t = it.getNext();
+            if (t && t->isPrimary())
+            {
+                t->writeContentsToFile(AT_OUT + name + ".png");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Runs the current line; true when it's finished and the next may start.
+    bool atStep(const std::string& line)
+    {
+        std::istringstream in(line);
+        std::string cmd;
+        in >> cmd;
+        std::string rest;
+        std::getline(in, rest);
+        size_t s = rest.find_first_not_of(" \t");
+        rest = s == std::string::npos ? "" : rest.substr(s);
+        DWORD elapsed = GetTickCount() - g_atStepStart;
+
+        if (cmd == "load")
+        {
+            // From the main menu, once the game has settled there.
+            if (g_atFramesSeen < 600)
+                return false;
+            SaveManager* sm = SaveManager::getSingleton();
+            if (!sm)
+                return elapsed > 120000 ? (atFinish("no SaveManager"), true) : false;
+            atWrite("INFO", "loading save " + rest);
+            sm->load(rest);
+            return true;
+        }
+        if (cmd == "wait_ready") // in a game, Hub found and ours, settled for 5 s
+        {
+            int limit = 240;
+            std::istringstream(rest) >> limit;
+            bool ready = atInGame() && g_hub && buildingCount(g_hub) > 0 && hubIsOurs();
+            if (!ready)
+                g_atReadySince = 0;
+            else if (!g_atReadySince)
+                g_atReadySince = GetTickCount();
+            if (ready && GetTickCount() - g_atReadySince > 5000)
+            {
+                Contract* c = currentContract();
+                std::ostringstream t;
+                t << "ready: Hub ours, " << buildingCount(g_hub) << " buildings, task "
+                  << (c ? c->quest + 1 : 0) << "/" << QUEST_COUNT;
+                atWrite("INFO", t.str());
+                return true;
+            }
+            if (elapsed > DWORD(limit) * 1000)
+            {
+                atCheck(false, "wait_ready timed out");
+                atFinish("not ready");
+            }
+            return false;
+        }
+        if (cmd == "wait")
+        {
+            float secs = 1.0f;
+            std::istringstream(rest) >> secs;
+            return elapsed >= DWORD(secs * 1000.0f);
+        }
+        if (cmd == "note")
+        {
+            atWrite("NOTE", rest);
+            return true;
+        }
+        if (cmd == "speed")
+        {
+            float x = 1.0f;
+            std::istringstream(rest) >> x;
+            ou->setGameSpeed(x, false);
+            return true;
+        }
+        if (cmd == "camera")
+        {
+            float x = 0, z = 0;
+            std::istringstream(rest) >> x >> z;
+            ou->player->focusCamera(Ogre::Vector3(x, ou->player->getCameraCenter().y, z));
+            return true;
+        }
+        if (cmd == "camera_on" || cmd == "pick")
+        {
+            Building* b = atFind(rest, false);
+            if (!b)
+            {
+                atCheck(false, cmd + " " + rest + ": no such building");
+                return true;
+            }
+            g_atCurrent = b;
+            if (cmd == "camera_on")
+                ou->player->focusCamera(b->getPosition());
+            atWrite("INFO", cmd + " " + b->getName() + ": " + describeRepairState(b));
+            return true;
+        }
+        if (cmd == "screenshot")
+        {
+            // Give the camera a moment to arrive before the picture.
+            if (elapsed < 1500)
+                return false;
+            bool ok = atScreenshot(rest);
+            atWrite(ok ? "SHOT" : "INFO", rest + ".png" + (ok ? "" : " failed"));
+            return true;
+        }
+        if (cmd == "dump")
+        {
+            dumpHubBuildings();
+            CopyFileA("mods\\TownLedger\\hub_buildings.txt", (AT_OUT + "hub_buildings.txt").c_str(), FALSE);
+            atWrite("INFO", "hub_buildings.txt copied");
+            return true;
+        }
+        if (cmd == "repair") // the nearest ruin with this name, by our Repair
+        {
+            Building* b = atFind(rest, true);
+            if (!b)
+            {
+                atCheck(false, "repair " + rest + ": no ruin by that name");
+                return true;
+            }
+            g_atCurrent = b;
+            repairBuilding(b, false);
+            atWrite("INFO", "repair ordered: " + describeRepairState(b));
+            return true;
+        }
+        if (cmd == "place") // place <stringId> <dx> <dz>: a construction site near the camera
+        {
+            std::string sid;
+            float dx = 0, dz = 0;
+            std::istringstream(rest) >> sid >> dx >> dz;
+            GameData* d = ou->gamedata.getData(sid);
+            if (!d || !g_createBuilding)
+            {
+                atCheck(false, "place " + sid + ": no such data");
+                return true;
+            }
+            Ogre::Vector3 eye = ou->player->getCameraCenter();
+            Ogre::Vector3 pos(eye.x + dx, 0.0f, eye.z + dz);
+            Building* b = g_createBuilding(ou->theFactory, d, pos, hubBase(), ou->player->getFaction(),
+                                           Ogre::Quaternion::IDENTITY, NULL, NULL, NULL, NULL, NULL, false, false,
+                                           false, 0, false);
+            g_atCurrent = b;
+            atWrite("INFO", "placed " + (b ? b->getName() + ": " + describeRepairState(b) : std::string("nothing")));
+            return true;
+        }
+        if (cmd == "construct") // construct <name|current> [seconds]: builders' work, sped up
+        {
+            std::string name;
+            float limit = 60;
+            std::istringstream(rest) >> name >> limit;
+            Building* b = atFind(name, false);
+            if (!b)
+            {
+                atCheck(false, "construct " + name + ": no such building");
+                return true;
+            }
+            Building::ConstructionState* own = b->getBuildState_ActualNonShared();
+            if (atComplete(b) || (own && own->constructionProgress >= 1.0f && elapsed > 3000))
+            {
+                atWrite("INFO", "constructed: " + describeRepairState(b));
+                return true;
+            }
+            b->addConstructionProgress(0.02f);
+            if (elapsed > DWORD(limit * 1000.0f))
+            {
+                atCheck(false, "construct " + name + " timed out: " + describeRepairState(b));
+                return true;
+            }
+            return false;
+        }
+        if (cmd == "set_task") // set_task <n>: jump the guided start to task n (1-based)
+        {
+            int n = 1;
+            std::istringstream(rest) >> n;
+            Contract* c = currentContract();
+            if (c)
+            {
+                c->quest = n - 1;
+                g_questAnnounced = -1;
+            }
+            atWrite("INFO", "task set to " + rest);
+            return true;
+        }
+        if (cmd == "expect")
+        {
+            std::istringstream e(rest);
+            std::string what;
+            e >> what;
+            std::string arg;
+            std::getline(e, arg);
+            size_t a = arg.find_first_not_of(" \t");
+            arg = a == std::string::npos ? "" : arg.substr(a);
+            if (what == "task") // expect task <n>: the guided start is on task n (1-based)
+            {
+                int n = 0;
+                std::istringstream(arg) >> n;
+                Contract* c = currentContract();
+                std::ostringstream t;
+                t << "task is " << (c ? c->quest + 1 : 0) << ", expected " << n;
+                atCheck(c && c->quest + 1 == n, t.str());
+            }
+            else if (what == "complete" || what == "incomplete")
+            {
+                Building* b = atFind(arg, false);
+                bool done = b && atComplete(b);
+                atCheck(b && done == (what == "complete"),
+                        what + " " + arg + ": " + (b ? describeRepairState(b) : std::string("not found")));
+            }
+            else if (what == "exists" || what == "missing")
+            {
+                Building* b = atFind(arg, false);
+                atCheck((b != NULL) == (what == "exists"), what + " " + arg);
+            }
+            else if (what == "none_stuck") // nothing of ours at 100% but not complete
+            {
+                std::vector<Building*> all;
+                hubBuildings(all);
+                std::ostringstream t;
+                int n = 0;
+                for (size_t i = 0; i < all.size(); ++i)
+                    if (stuckUnfinished(all[i]))
+                    {
+                        ++n;
+                        t << " " << all[i]->getName() << ";";
+                    }
+                atCheck(n == 0, "none stuck at 100%:" + (n ? t.str() : std::string(" ok")));
+            }
+            else
+                atCheck(false, "unknown expectation: " + rest);
+            return true;
+        }
+        if (cmd == "quit")
+        {
+            atFinish("quit");
+            return true;
+        }
+        atCheck(false, "unknown command: " + line);
+        return true;
+    }
+
+    // Every frame: one step at a time; each step can take as many frames as
+    // it needs.
+    void autotestTick()
+    {
+        if (!g_atChecked)
+            atLoadScenario();
+        if (!g_atActive)
+            return;
+        ++g_atFramesSeen;
+        if (g_atPc >= g_atLines.size())
+        {
+            atFinish("end of scenario");
+            return;
+        }
+        if (!g_atStepBegun)
+        {
+            g_atStepBegun = true;
+            g_atStepStart = GetTickCount();
+            atWrite("STEP", g_atLines[g_atPc]);
+        }
+        if (atStep(g_atLines[g_atPc]))
+        {
+            ++g_atPc;
+            g_atStepBegun = false;
+        }
+    }
+
     void (*mainLoop_orig)(GameWorld*, float) = NULL;
 
     void mainLoop_hook(GameWorld* thisptr, float time)
     {
         mainLoop_orig(thisptr, time);
+        autotestTick(); // only does anything when a scenario file is present
 
         ++g_frame;
         if (g_frame % FIND_HUB_EVERY_N_FRAMES == 1)

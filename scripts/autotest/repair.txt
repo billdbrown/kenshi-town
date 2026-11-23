@@ -1,0 +1,14 @@
+# Repairing a ruined Longhouse with the panel's Repair: builders' work (sped
+# up here) must end with the exterior back and the building complete.
+load kt-test
+wait_ready
+camera_on Longhouse
+screenshot repair-0-ruin
+repair Longhouse
+expect incomplete current
+construct current 90
+wait 5
+expect complete current
+camera_on current
+screenshot repair-1-done
+quit
