@@ -21,6 +21,7 @@
 #include <kenshi/PlayerInterface.h>
 #include <kenshi/Character.h>
 #include <kenshi/Faction.h>
+#include <kenshi/FactionWarMgr.h>
 #include <kenshi/Town.h>
 #include <kenshi/SharedKing.h>
 #include <kenshi/ZoneManager.h>
@@ -4866,6 +4867,117 @@ namespace
             g_iconWidgets[i]->setVisible(false);
     }
 
+    // ==== Raids (probe) ==========================================================
+    //
+    // Kenshi's raids on player towns are faction "campaigns" (FactionCampaign
+    // records on the Faction: for the Dust Bandits "dustbandit Invasion with
+    // demands", 20% a day). FactionWarMgr keeps a queue of requests, each with
+    // a start time, and starts them through triggerCampaign. This is the probe
+    // that finds out whether one can be held back: it reports, and on request
+    // pushes the queue's start times away or refuses at the trigger.
+
+    void atWrite(const std::string& kind, const std::string& text);
+    const char* RAID_FACTION = "Dust Bandits";
+    int g_raidMode = 0; // 0 leave alone; 1 push queued requests back; 2 refuse to start; 3 refuse to queue
+    double g_raidHoldHours = 24.0;
+    int g_raidPushed = 0, g_raidRefused = 0, g_raidStarted = 0, g_raidQueued = 0;
+
+    std::string raidTargetName(RootObjectBase* t)
+    {
+        return t ? t->getName() : std::string("(none)");
+    }
+
+    CampaignInstance* (*triggerCampaign_orig)(FactionWarMgr*, RootObjectBase*, CampaignData*, TownBase*) = NULL;
+    CampaignInstance* triggerCampaign_hook(FactionWarMgr* self, RootObjectBase* target, CampaignData* data,
+                                           TownBase* home)
+    {
+        std::string who = self && self->me ? factionName(self->me) : "?";
+        bool refuse = g_raidMode == 2 && who == RAID_FACTION;
+        std::ostringstream t;
+        t << "campaign START by " << who << " on " << raidTargetName(target) << " from "
+          << (home ? home->getName() : std::string("(no home)")) << (refuse ? ": REFUSED" : "");
+        atWrite("INFO", t.str());
+        DebugLog("TownLedger: " + t.str());
+        if (refuse)
+        {
+            ++g_raidRefused;
+            return NULL;
+        }
+        ++g_raidStarted;
+        return triggerCampaign_orig(self, target, data, home);
+    }
+
+    void (*queueCampaign_orig)(FactionWarMgr*, RootObjectBase*, GameData*, float, float, TownBase*, bool,
+                               Faction*) = NULL;
+    void queueCampaign_hook(FactionWarMgr* self, RootObjectBase* target, GameData* data, float minTime, float maxTime,
+                            TownBase* home, bool forceDuplicate, Faction* triggering)
+    {
+        std::string who = self && self->me ? factionName(self->me) : "?";
+        bool refuse = g_raidMode == 3 && who == RAID_FACTION;
+        std::ostringstream t;
+        t << "campaign QUEUED by " << who << ": '" << (data ? data->name : std::string("?")) << "' on "
+          << raidTargetName(target) << ", in " << minTime << " to " << maxTime << " h"
+          << (refuse ? ": REFUSED" : "");
+        atWrite("INFO", t.str());
+        DebugLog("TownLedger: " + t.str());
+        if (refuse)
+        {
+            ++g_raidRefused;
+            return;
+        }
+        ++g_raidQueued;
+        queueCampaign_orig(self, target, data, minTime, maxTime, home, forceDuplicate, triggering);
+    }
+
+    FactionWarMgr* raidMgr()
+    {
+        Faction* f = (ou && ou->factionMgr) ? ou->factionMgr->getFactionByName(RAID_FACTION) : NULL;
+        return f ? f->warMgr : NULL;
+    }
+
+    void raidsTick()
+    {
+        if (g_raidMode != 1 || g_frame % 30 != 0)
+            return;
+        FactionWarMgr* w = raidMgr();
+        if (!w)
+            return;
+        double now = ou->getTimeStamp_inGameHours().time;
+        for (uint32_t i = 0; i < w->campaignRequests.size(); ++i)
+        {
+            FactionWarMgr::CampaignRequest* r = w->campaignRequests[i];
+            if (r && r->timeToStart.time < now + 1.0)
+            {
+                r->timeToStart.time = now + g_raidHoldHours;
+                ++g_raidPushed;
+            }
+        }
+    }
+
+    std::string raidsReport()
+    {
+        std::ostringstream t;
+        FactionWarMgr* w = raidMgr();
+        if (!w)
+            return "raids: no war manager";
+        double now = ou->getTimeStamp_inGameHours().time;
+        t << "raids (" << RAID_FACTION << ", mode " << g_raidMode << "): now " << now << " h (stamp "
+          << ou->getTimeStamp() << "), next update " << w->nextUpdateTime.time << "; possible "
+          << w->possibleCampaigns.size() << ", active " << w->activeCampaigns.size() << ", squads on campaign "
+          << w->forces.size() << ", queued " << w->campaignRequests.size() << ":";
+        for (uint32_t i = 0; i < w->campaignRequests.size(); ++i)
+        {
+            FactionWarMgr::CampaignRequest* r = w->campaignRequests[i];
+            if (!r)
+                continue;
+            t << " [starts " << r->timeToStart.time << " (in " << (r->timeToStart.time - now) << " h) on "
+              << raidTargetName(r->target.getRootObjectBase()) << ", attempts " << r->numAttempts << "]";
+        }
+        t << "; so far queued " << g_raidQueued << ", started " << g_raidStarted << ", refused " << g_raidRefused
+          << ", pushed back " << g_raidPushed;
+        return t.str();
+    }
+
     // ==== Autotest ==============================================================
     //
     // A scenario in mods/TownLedger/autotest/scenario.txt turns the plugin into
@@ -5644,6 +5756,38 @@ namespace
             atWrite("INFO", t.str());
             return true;
         }
+        if (cmd == "raids") // raids [off|hold <hours>|refuse|noqueue]: report the raid queue; set how it's treated
+        {
+            std::istringstream in(rest);
+            std::string mode;
+            in >> mode;
+            if (mode == "off")
+                g_raidMode = 0;
+            else if (mode == "hold")
+            {
+                g_raidMode = 1;
+                in >> g_raidHoldHours;
+            }
+            else if (mode == "refuse")
+                g_raidMode = 2;
+            else if (mode == "noqueue")
+                g_raidMode = 3;
+            else if (mode == "force") // force <min h> <max h>: queue the Dust Bandits' raid on the Hub
+            {
+                float lo = 0.3f, hi = 0.4f;
+                in >> lo >> hi;
+                FactionWarMgr* w = raidMgr();
+                GameData* d = ou->gamedata.getData("16854-gamedata.base"); // dustbandit Invasion with demands
+                Character* f = atFounder();
+                if (!w || !d || !g_hub || !f)
+                    atCheck(false, "raids force: missing the war manager, the campaign, the Hub or the founder");
+                else
+                    queueCampaign_hook(w, g_hub, d, lo, hi, w->getNearestTown(g_hub->getPosition()), true,
+                                       f->getFaction());
+            }
+            atWrite("INFO", raidsReport());
+            return true;
+        }
         if (cmd == "safe") // safe on|off: remove anyone hostile to the founder within 300 m, as they come
         {
             g_atSafe = rest != "off";
@@ -6048,6 +6192,7 @@ namespace
     {
         mainLoop_orig(thisptr, time);
         autotestTick(); // only does anything when a scenario file is present
+        raidsTick();
         updateIcons();
 
         ++g_frame;
@@ -6139,6 +6284,15 @@ __declspec(dllexport) void startPlugin()
             checkProspecting_hook, &checkProspecting_orig);
 
     hookWhichTown();
+    tryHook("triggerCampaign",
+            KenshiLib::GetRealAddress(static_cast<CampaignInstance* (FactionWarMgr::*)(
+                                          RootObjectBase*, CampaignData*, TownBase*)>(&FactionWarMgr::triggerCampaign)),
+            triggerCampaign_hook, &triggerCampaign_orig);
+    tryHook("queueCampaign",
+            KenshiLib::GetRealAddress(static_cast<void (FactionWarMgr::*)(RootObjectBase*, GameData*, float, float,
+                                                                          TownBase*, bool, Faction*)>(
+                &FactionWarMgr::triggerCampaign)),
+            queueCampaign_hook, &queueCampaign_orig);
     tryHook("buildingPlacementUpdate", KenshiLib::GetRealAddress(&PreviewBuilding::_NV_buildingPlacementUpdate),
             placementUpdate_hook, &placementUpdate_orig);
 

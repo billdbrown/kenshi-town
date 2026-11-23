@@ -1,0 +1,37 @@
+# Raids, forced: queue the Dust Bandits' raid on the Hub and let it run.
+load kt-test
+wait_ready
+raids
+speed 3
+raids force 0.3 0.4
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+quit

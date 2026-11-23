@@ -105,6 +105,26 @@ guards leaving), the selection lock, the ankh (construct it, use it, screenshot 
   the operate-machinery job (87); SIT_ON_THRONE (255) does nothing. The harness's camera
   can't get close enough to judge the bow itself: see `build/autotest/ankh2-*/z.png`.
 
+## Raids: can they be delayed? (2026-11-23, morning)
+
+Yes for campaign raids; a second source of raiders isn't covered yet. Scenarios `raids-observe`,
+`raids-forced`, `raids-held`, `raids-refused`.
+
+- The raids on a player town are **faction campaigns**, not the old `DiplomaticAssaults` records
+  (those hang off a test squad only). Dust Bandits: `dustbandit Invasion with demands`
+  (16854-gamedata.base), 20% a day, 10 forces, from Dust Bandit Camp 1.
+- `FactionWarMgr` (Faction +0x88) keeps `campaignRequests`, each with a `timeToStart` in game
+  hours (`getTimeStamp_inGameHours`). A forced raid started on time and 12 bandits reached the
+  Hub about 1.6 game hours later.
+- **Held:** pushing `timeToStart` forward every half second kept the raid from starting for as
+  long as it was held; released, it started 1 h later and arrived. This is the delay.
+- **Refused:** returning NULL from `triggerCampaign` didn't crash; Kenshi retried 101 times and
+  dropped the request.
+- **Not covered:** in the refused run 15 Dust Bandits still walked in and attacked with no
+  campaign running ("Patrolling", then "Assault" and "Ransacking town"). Roaming squads raid
+  the town on their own. That is probably what the day-one raids overnight were. In the
+  observe run nobody came in 180 s, so it's chance.
+
 ## For Bill
 
 (questions and choices that came up overnight)

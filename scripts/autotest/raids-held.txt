@@ -1,0 +1,54 @@
+# Raids, held: a queued raid's start is pushed back while held, and it comes once released.
+load kt-test
+wait_ready
+speed 3
+raids hold 1
+raids force 0.3 0.4
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+note released
+raids off
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+quit

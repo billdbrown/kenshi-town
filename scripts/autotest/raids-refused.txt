@@ -1,0 +1,49 @@
+# Raids, refused: a raid stopped at the moment it would start.
+load kt-test
+wait_ready
+speed 3
+raids refuse
+raids force 0.3 0.4
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+wait 15
+raids
+nearby 200
+quit

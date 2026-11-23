@@ -55,6 +55,7 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `expect gate\|people\|citizens <n>` | counts |
 | `expect gate_modest` / `expect gate_outside` | arrivals' stats in range; last listed arrival outside the walls |
 | `safe on\|off` | remove anyone hostile to the founder within 300 m as they come (raids kill a test) |
+| `raids [off\|hold <h>\|refuse\|noqueue\|force <min h> <max h>]` | report the Dust Bandits' raid queue; hold queued raids back, refuse them at the start, or force one onto the Hub |
 | `nearby [metres]` | who is around the founder, by faction, hostility and activity |
 | `give <count> <item name>` | items into the founder's pack (what fits) |
 | `wait_task <n> [secs]` | wait for the guided start to reach task n; fails on timeout or overshoot |

@@ -1,0 +1,30 @@
+# Raids, observed: what is queued in the save, and when it starts.
+load kt-test
+wait_ready
+raids
+speed 3
+wait 20
+raids
+nearby 150
+wait 20
+raids
+nearby 150
+wait 20
+raids
+nearby 150
+wait 20
+raids
+nearby 150
+wait 20
+raids
+nearby 150
+wait 20
+raids
+nearby 150
+wait 20
+raids
+nearby 150
+wait 20
+raids
+nearby 150
+quit
