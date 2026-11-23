@@ -92,6 +92,14 @@ This file is the loop's memory: update the status lines as you go, and commit it
 If there is time left: the garrison contract (jump the clock past grace; fee, warnings,
 guards leaving), the selection lock, the ankh (construct it, use it, screenshot the bow).
 
+- **Selection lock: passes** (scenario `selection-lock`, 5/5). A citizen can't be selected by
+  either route Kenshi uses, with or without a profile; the founder can.
+- **Garrison: there isn't one.** Nobody of the Holy Nation Outlaws is in the Hub. Within
+  300 m of the founder in `kt-test` there are 15 people: 5 Trade Ninjas (the bar's shopkeeper
+  and four static guards), 6 Mercenary Guild (relaxing in the bar), 1 Hounds, 2 Vagrants and
+  the founder. The Hub's Outlaw resident squad ("holy hub hideout") has no members in the
+  game data, only notes. So the contract counts 0 guards and charges 0. Not tested further.
+
 ## For Bill
 
 (questions and choices that came up overnight)
@@ -142,9 +150,11 @@ guards leaving), the selection lock, the ankh (construct it, use it, screenshot 
   beyond 900 m. (4) Layering: icons sit above Kenshi's own HUD panels where they overlap and
   below ours; a layer under everything ("Back") drew nothing. (5) What the Town Hall icon
   opens: now the whole Kenshi Town window; a smaller "headquarters" menu is the idea.
-- **The Town tab says "Garrison: 0 Outlaws"** in `kt-test`, and no Holy Nation Outlaws were
-  near the founder during the raids. The hired garrison may not exist in a new game at all.
-  Not investigated yet.
+- **The hired garrison doesn't exist.** The Hub belongs to the Holy Nation Outlaws on paper,
+  but none of them live there (see the extras above), so the contract has nobody to pay and
+  nobody defends the town. Who should the garrison be? Candidates already standing in the
+  bar: the six Mercenary Guild (Kenshi has its own hire-mercenaries mechanic) or the bar's
+  four Trade Ninja guards. Or spawn a real Outlaw squad at claim.
 - The Town button draws on top of Kenshi's conversation window (seen during the Dust Boss's
   shakedown).
 - Idea, not built: an alert "builders can't find building materials" when a site needs

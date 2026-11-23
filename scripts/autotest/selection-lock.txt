@@ -1,0 +1,18 @@
+# The selection lock: the founder (retinue) can be selected, a citizen can't,
+# by either of the routes Kenshi uses.
+load kt-test
+wait_ready
+safe on
+select 0
+expect selected yes
+arrive
+accept 0
+people
+select 1
+expect selected no
+assign 1 Miner
+select 1
+expect selected no
+select 0
+expect selected yes
+quit

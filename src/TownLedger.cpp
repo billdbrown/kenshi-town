@@ -4995,6 +4995,7 @@ namespace
     // Safe mode: a test of the town shouldn't end because a Dust Bandit raid
     // walked in and killed the founder (it did, 2026-11-23, 90 s into a run).
     std::string g_atLoadName; // the save the scenario loaded
+    bool g_atSelectedTarget = false; // whether the last `select` ended with its target selected
     bool g_atSafe = false;
     int g_atSafeRemoved = 0;
 
@@ -5713,6 +5714,33 @@ namespace
             atCheck(had && g_main && g_main->getVisible(), "town hall icon clicked: Kenshi Town window open");
             return true;
         }
+        if (cmd == "select") // select <person index>: both ways Kenshi selects a character
+        {
+            size_t i = 0;
+            std::istringstream(rest) >> i;
+            const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+            if (i >= people.size())
+            {
+                atCheck(false, "select " + rest + ": no such person");
+                return true;
+            }
+            ou->player->unselectAll();
+            ou->player->selectObject(people[i], false);
+            ou->player->objectSelected(people[i], true);
+            lektor<RootObject*> sel;
+            ou->player->getAllSelectedObjects(sel, CHARACTER);
+            g_atSelectedTarget = false;
+            std::ostringstream t;
+            t << "select " << people[i]->getName() << ": " << sel.size() << " selected:";
+            for (uint32_t k = 0; k < sel.size(); ++k)
+            {
+                t << " " << sel[k]->getName() << ";";
+                if (sel[k] == people[i])
+                    g_atSelectedTarget = true;
+            }
+            atWrite("INFO", t.str());
+            return true;
+        }
         if (cmd == "nearby") // nearby [metres]: who is around the founder, and who is hostile to him
         {
             float metres = 60;
@@ -5859,6 +5887,11 @@ namespace
                 std::ostringstream t;
                 t << what << " is " << have << ", expected " << n;
                 atCheck(have == n, t.str());
+            }
+            else if (what == "selected") // expect selected yes|no: did the last `select` take
+            {
+                atCheck(g_atSelectedTarget == (arg == "yes"),
+                        std::string("last select ") + (g_atSelectedTarget ? "took" : "was refused") + ", expected " + arg);
             }
             else if (what == "gate_outside") // the last arrival listed by `gate` stands outside the walls
             {

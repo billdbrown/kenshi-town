@@ -63,6 +63,7 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `beds` | every bed in the Hub and what it's inside |
 | `icons [on\|off]` | overhead icons: found/drawn per kind, with clip-space and camera debug |
 | `click_icon` | what clicking the town hall's icon does (opens the Kenshi Town window) |
+| `select <person>` / `expect selected yes\|no` | try to select a player character both ways; did it take |
 | `who` | what the founder is doing, his jobs, distance to `current` |
 | `construct <name\|current> [secs]` | does builders' work on it until complete (default 60 s) |
 | `set_task <n>` | jumps the guided start to task n |
