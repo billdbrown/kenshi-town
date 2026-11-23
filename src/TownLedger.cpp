@@ -362,6 +362,21 @@ namespace
             own->isComplete = true;
     }
 
+    // Bring a repaired ruin back as itself. Un-ruining a building already at
+    // 100% (the instant repair) rebuilds its full exterior; un-ruining it at
+    // 0% for builders shows Kenshi's under-construction form, which for the
+    // Hub's map buildings is the bare interior shell, and finishing that
+    // construction never swaps it back, even when Kenshi marks it complete
+    // itself (2026-11-22: Longhouse "2400%, marked complete", no exterior).
+    // So once builders are done, replay the instant path: ruin for a moment,
+    // then un-ruin at 100%.
+    void rebuildAsFinished(Building* b)
+    {
+        b->setDestroyed(true);
+        b->setDestroyed(false);
+        finishBuilding(b);
+    }
+
     void setHubOwner(Faction* owner)
     {
         if (!g_hub || !owner)
@@ -3230,13 +3245,15 @@ namespace
 
     // A ruin becomes an unfinished building in the base, for builders to put
     // up with materials (or finished on the spot: dev).
+    std::set<Building*> g_repairing;  // ruins we've handed to builders, this session
+
     void repairBuilding(Building* b, bool instantly)
     {
         if (!b->isDestroyed())
         {
             if (instantly) // re-finish: what fixes a repair that ended without its exterior
             {
-                finishBuilding(b);
+                rebuildAsFinished(b);
                 actionLog("[buildings] re-finished " + b->getName() + ": " + describeRepairState(b));
             }
             else
@@ -3250,6 +3267,7 @@ namespace
             // finished the moment they were ordered (2026-11-22). Reset its
             // own construction state so builders have to bring materials.
             Building::ConstructionState* st = b->getBuildState_ActualNonShared();
+            g_repairing.insert(b);
             if (st)
             {
                 st->isComplete = false;
@@ -3295,6 +3313,19 @@ namespace
         for (size_t i = 0; i < all.size(); ++i)
         {
             Building* b = all[i];
+            if (g_repairing.count(b) && !b->isDestroyed())
+            {
+                Building::ConstructionState* own = b->getBuildState_ActualNonShared();
+                if (own && (own->isComplete || own->constructionProgress >= 0.999f))
+                {
+                    g_repairing.erase(b);
+                    g_refinished.insert(b);
+                    rebuildAsFinished(b);
+                    actionLog("[buildings] repair done, rebuilt: " + b->getName() + ": " + describeRepairState(b));
+                    toast("Repaired: " + b->getName());
+                    continue;
+                }
+            }
             if (b->getFaction() != mine || b->isDestroyed())
                 continue;
             if (!stuckUnfinished(b) || g_refinished.count(b))
