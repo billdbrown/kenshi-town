@@ -3714,9 +3714,18 @@ namespace
             if (all[i]->getFaction() == mine && !all[i]->isDestroyed() &&
                 all[i]->getName().find(nameContains) != std::string::npos)
             {
-                float done = buildProgress(all[i]);
+                // The building's own state, and its complete flag: the shared
+                // one read 100% for a research bench just placed (2026-11-22).
+                Building::ConstructionState* own = all[i]->getBuildState_ActualNonShared();
+                float done = own ? own->constructionProgress : buildProgress(all[i]);
+                if (own && own->isComplete)
+                    done = 1.0f;
+                else if (done >= 1.0f)
+                    done = 0.99f;
                 if (done > best)
                     best = done;
+                if (best >= 1.0f)
+                    actionLog("[quest] built: " + all[i]->getName() + ": " + describeRepairState(all[i]));
             }
         if (best >= 1.0f)
         {
@@ -3958,6 +3967,8 @@ namespace
         // announcing anything: a new game's clean-up runs in these first ticks.
         if (++g_questWarm < 3)
             return;
+        if (g_questWarm == 3)
+            dumpHubBuildings(); // a fresh list of the Hub after every load, for diagnosis
         if (int(g_questDoneUntil - GetTickCount()) > 0)
             return; // the tracker is still showing the last task as complete
         const Quest& q = QUESTS[c->quest];

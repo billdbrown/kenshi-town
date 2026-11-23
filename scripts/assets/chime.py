@@ -12,7 +12,7 @@ import sys
 import wave
 
 RATE = 44100
-PEAK = 0.28  # about -11 dBFS
+PEAK = 0.10  # about -20 dBFS (-11 was too loud, 2026-11-22)
 
 
 def bell(t, freq):
