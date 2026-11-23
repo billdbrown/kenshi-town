@@ -8,6 +8,16 @@ plugin's report, ends Kenshi and removes the scenario (normal play never sees
 it). Results, screenshots included, land in `build/autotest/<scenario>-<time>/`.
 It takes over the screen while it runs, and refuses to start if Kenshi is open.
 
+How a run gets into the game (each learned the hard way, 2026-11-22): Kenshi started
+directly hands over to Steam and exits, so the runner follows `kenshi_x64.exe` by name;
+it presses OK on Kenshi's settings launcher with a window message; and the `load` step
+runs from MyGUI's `eventFrameStart`, because the game loop hook doesn't tick at the main
+menu and Kenshi never fires Ogre frame listeners.
+
+`construct` adds progress directly, without materials; the plugin's finisher then
+completes anything of ours at 100%. So it proves "task waits for completion", not
+"builders fetch materials".
+
 The test save is **`kt-test`**: a "Kenshi Town: The Hub" new game, saved right
 after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 
@@ -20,7 +30,8 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `wait <secs>` | real seconds |
 | `speed <x>` | game speed |
 | `camera <x> <z>` | moves the camera |
-| `camera_on <name>` | camera to the nearest Hub building whose name contains `<name>`; it becomes `current` |
+| `camera_on <name>` | Kenshi's own framing (`focusCameraOnObject`) of the nearest Hub building whose name contains `<name>`; it becomes `current` |
+| `view <yaw> <pitch> <zoom>` | experimental: `manuallySetOrientationAndZoom`; positive pitch looks down, but zoom isn't a distance (left the camera at ground level) |
 | `pick <name>` | makes it `current` without moving the camera |
 | `screenshot <name>` | `<name>.png` of the game window |
 | `dump` | the Hub's building list (`hub_buildings.txt`) |

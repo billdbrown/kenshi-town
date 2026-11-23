@@ -32,6 +32,7 @@
 #include <kenshi/CharStats.h>
 #include <kenshi/Inventory.h>
 #include <kenshi/SaveManager.h>
+#include <kenshi/CameraClass.h>
 #include <kenshi/util/hand.h>
 // Tasker.h can't be included alongside AI/AITaskSystem.h: KenshiLib 0.4.0
 // defines `enum taskPriority` and its enumerators in both. We need only two
@@ -66,6 +67,7 @@ namespace TaskerFields
 #include <ogre/OgreRoot.h>
 #include <ogre/OgreRenderSystem.h>
 #include <ogre/OgreRenderTarget.h>
+#include <ogre/OgreFrameListener.h>
 #pragma comment(lib, "winmm.lib")
 #include <kenshi/gui/DatapanelGUI.h>
 #include <kenshi/gui/DataPanelLine.h>
@@ -4594,6 +4596,18 @@ namespace
         return !b->isDestroyed() && own && own->isComplete;
     }
 
+    // Camera angle and distance for screenshots: from a bit above, far
+    // enough back to see a whole building (the load leaves it close and low).
+    void atView(float yaw, float pitch, float zoom)
+    {
+        CameraClass* cam = ou->player->getCamera();
+        if (!cam)
+            return;
+        Ogre::Quaternion q = Ogre::Quaternion(Ogre::Degree(yaw), Ogre::Vector3::UNIT_Y) *
+                             Ogre::Quaternion(Ogre::Degree(pitch), Ogre::Vector3::UNIT_X);
+        cam->manuallySetOrientationAndZoom(q, zoom);
+    }
+
     bool atScreenshot(const std::string& name)
     {
         Ogre::Root* root = Ogre::Root::getSingletonPtr();
@@ -4697,8 +4711,21 @@ namespace
             }
             g_atCurrent = b;
             if (cmd == "camera_on")
-                ou->player->focusCamera(b->getPosition());
+            {
+                CameraClass* cam = ou->player->getCamera();
+                if (cam) // Kenshi's own "show me this" framing
+                    cam->focusCameraOnObject(b, Ogre::Vector3::ZERO, false);
+                else
+                    ou->player->focusCamera(b->getPosition());
+            }
             atWrite("INFO", cmd + " " + b->getName() + ": " + describeRepairState(b));
+            return true;
+        }
+        if (cmd == "view") // view <yaw> <pitch> <zoom>
+        {
+            float yaw = 30, pitch = -35, zoom = 450;
+            std::istringstream(rest) >> yaw >> pitch >> zoom;
+            atView(yaw, pitch, zoom);
             return true;
         }
         if (cmd == "screenshot")
@@ -4847,13 +4874,18 @@ namespace
 
     // Every frame: one step at a time; each step can take as many frames as
     // it needs.
+    bool atOnLoadStep()
+    {
+        return g_atPc < g_atLines.size() && g_atLines[g_atPc].compare(0, 5, "load ") == 0;
+    }
+
+    // From the game loop: every step but `load`.
     void autotestTick()
     {
         if (!g_atChecked)
             atLoadScenario();
-        if (!g_atActive)
+        if (!g_atActive || atOnLoadStep())
             return;
-        ++g_atFramesSeen;
         if (g_atPc >= g_atLines.size())
         {
             atFinish("end of scenario");
@@ -4870,6 +4902,71 @@ namespace
             ++g_atPc;
             g_atStepBegun = false;
         }
+    }
+
+    // The game loop doesn't run at the main menu, so `load` runs from an Ogre
+    // frame listener instead: every rendered frame, on the thread the menu's
+    // own Load button runs on (2026-11-22: from the game loop the scenario
+    // never started).
+    // (An Ogre FrameListener was tried first: added fine, never called. Kenshi
+    // doesn't fire Ogre's frame events. MyGUI's eventFrameStart does run.)
+    void atMenuFrame(float)
+    {
+        {
+            if (!g_atChecked)
+                atLoadScenario();
+            if (!g_atActive || !atOnLoadStep())
+                return;
+            ++g_atFramesSeen;
+            if (!g_atStepBegun)
+            {
+                g_atStepBegun = true;
+                g_atStepStart = GetTickCount();
+                atWrite("STEP", g_atLines[g_atPc]);
+            }
+            if (atStep(g_atLines[g_atPc]))
+            {
+                ++g_atPc;
+                g_atStepBegun = false;
+            }
+        }
+    }
+    bool g_atFramesAdded = false;
+
+    // The plugin starts before Kenshi creates Ogre's Root, so a small thread
+    // waits for it (up to two minutes) and adds the listener once. Only when a
+    // scenario is present: normal play never gets the thread or the listener.
+    DWORD WINAPI autotestWaitForOgre(LPVOID)
+    {
+        for (int i = 0; i < 1200 && !g_atFramesAdded; ++i)
+        {
+            MyGUI::Gui* gui = MyGUI::Gui::getInstancePtr();
+            if (gui)
+            {
+                Sleep(500); // let it finish starting up
+                gui->eventFrameStart += MyGUI::newDelegate(atMenuFrame);
+                g_atFramesAdded = true;
+                DebugLog("TownLedger: [autotest] MyGUI frame handler added");
+                return 0;
+            }
+            Sleep(100);
+        }
+        if (!g_atFramesAdded)
+            ErrorLog("TownLedger: [autotest] Ogre never started; no frame listener");
+        return 0;
+    }
+
+    void addAutotestFrames()
+    {
+        FILE* f = fopen(AT_SCENARIO, "r");
+        char cwd[MAX_PATH] = "";
+        GetCurrentDirectoryA(MAX_PATH, cwd);
+        DebugLog(std::string("TownLedger: [autotest] ") + (f ? "scenario found" : "no scenario") + " (cwd " + cwd + ")");
+        if (!f)
+            return;
+        fclose(f);
+        DebugLog("TownLedger: [autotest] scenario present; waiting for Ogre");
+        CreateThread(NULL, 0, autotestWaitForOgre, NULL, 0, NULL);
     }
 
     void (*mainLoop_orig)(GameWorld*, float) = NULL;
@@ -4948,6 +5045,7 @@ namespace
 __declspec(dllexport) void startPlugin()
 {
     DebugLog("TownLedger: loading");
+    addAutotestFrames();
     if (KenshiLib::SUCCESS != KenshiLib::AddHook(
             KenshiLib::GetRealAddress(&GameWorld::_NV_mainLoop_GPUSensitiveStuff),
             mainLoop_hook, &mainLoop_orig))

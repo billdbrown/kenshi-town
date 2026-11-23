@@ -49,6 +49,50 @@ def check_saves(scenario_lines):
                 raise SystemExit("save %r not found in %s" % (parts[1].strip(), SAVES))
 
 
+def kenshi_pids():
+    out = subprocess.run(["tasklist", "/FO", "CSV", "/NH", "/FI", "IMAGENAME eq kenshi_x64.exe"],
+                         capture_output=True, text=True).stdout
+    return [int(line.split('","')[1]) for line in out.splitlines() if line.lower().startswith('"kenshi_x64.exe"')]
+
+
+def click_launcher_ok():
+    """Kenshi opens a settings launcher ("Kenshi 1.0.x - x64 (...)", with Video
+    settings / Mods tabs) before the game. Press its OK through Windows
+    messages, without touching the mouse. True if it was there."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def text(h):
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(h, buf, 256)
+        return buf.value
+
+    dialogs = []
+
+    def top(h, _):
+        t = text(h)
+        if user32.IsWindowVisible(h) and t.startswith("Kenshi 1.") and " - x64" in t:
+            dialogs.append(h)
+        return True
+
+    user32.EnumWindows(proc_type(top), 0)
+    for dialog in dialogs:
+        buttons = []
+
+        def child(h, _):
+            if text(h) == "OK":
+                buttons.append(h)
+            return True
+
+        user32.EnumChildWindows(dialog, proc_type(child), 0)
+        if buttons:
+            user32.PostMessageW(buttons[0], 0x00F5, 0, 0)  # BM_CLICK
+            return True
+    return False
+
+
 def read_report():
     try:
         with open(REPORT, encoding="utf-8", errors="replace") as f:
@@ -85,24 +129,34 @@ def main():
 
     name = os.path.splitext(os.path.basename(args.scenario))[0]
     started = time.time()
-    proc = None
     try:
-        proc = subprocess.Popen([EXE], cwd=KENSHI)
-        print("launched Kenshi (pid %d); waiting up to %ds" % (proc.pid, args.timeout))
+        # Started directly, Kenshi hands over to Steam and exits; Steam starts
+        # it again as a new process. So follow kenshi_x64.exe by name.
+        subprocess.Popen([EXE], cwd=KENSHI)
+        print("launched Kenshi; waiting up to %ds" % args.timeout)
+        clicked = False
+        last_seen = time.time()
         while time.time() - started < args.timeout:
-            if "\nDONE\t" in "\n" + read_report() or proc.poll() is not None:
+            if "\nDONE\t" in "\n" + read_report():
                 break
-            time.sleep(2)
+            if kenshi_pids():
+                last_seen = time.time()
+            elif time.time() - last_seen > 30:
+                print("Kenshi is gone")
+                break
+            if not clicked and click_launcher_ok():
+                clicked = True
+                print("pressed OK on Kenshi's launcher (%ds)" % (time.time() - started))
+            time.sleep(1)
     finally:
         try:
             os.remove(SCENARIO)
         except OSError:
             pass
-        if proc and proc.poll() is None:
-            time.sleep(3)
-            if proc.poll() is None:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
-                print("ended Kenshi")
+        time.sleep(3)
+        for pid in kenshi_pids():
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+            print("ended Kenshi (pid %d)" % pid)
 
     report = read_report()
     dest = os.path.join(REPO, "build", "autotest", "%s-%s" % (name, datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))
@@ -114,7 +168,7 @@ def main():
         print("screenshots:", ", ".join(os.path.join(dest, s) for s in sorted(shots)))
     try:
         with open(PLUGIN_LOG, encoding="utf-8", errors="replace") as f:
-            tail = [l.rstrip() for l in f if "TownLedger" in l and "[autotest]" not in l]
+            tail = [l.rstrip() for l in f if "TownLedger" in l and " hooked " not in l]
         print("\n=== plugin log (last 15) ===")
         print("\n".join(tail[-15:]))
     except OSError:
