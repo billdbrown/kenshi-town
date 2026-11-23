@@ -81,7 +81,7 @@ This file is the loop's memory: update the status lines as you go, and commit it
        position has that centre subtracted (the followed object's position while the camera
        follows something) before the camera's view and projection matrices are applied.
        MyGUI looks textures up in Ogre's "GUI" resource group, so `mods/TownLedger` is added
-       to it. Placeholder PNGs are in `mod/TownLedger/` (made by `scripts/assets/icons.py`).
+       to it. (The placeholder PNGs and `icons.py` were replaced by `scripts/assets/markers.py`.)
      - Vanilla: no overhead icons found in the game data, the GUI images or KenshiLib's
        headers. If you've seen trader or bandit icons in game, they may come from a mod.
      - The hostile icon is proven by numbers only (1 squad of 15 Dust Bandits, drawn at
@@ -141,6 +141,16 @@ Hub's radius. A tracker line says so while it lasts; toasts at the start and the
 `grace-holds` (squad peaceful, raid pushed back 3 times, grace waits while 15 bandits are in
 town) and `grace-ends` (back to -10, a squad attacks at once). Saves already past the guided
 start are untouched.
+
+**Overhead markers redesigned** (Bill: "a little bit simple", "don't really match Kenshi
+thematically", full name on hover, glyphs not letters). They're now in Kenshi's shop-sign
+language: `scripts/assets/markers.py` cuts a plaque and Kenshi's crossed-blades glyph out of the
+installed game's `signs2_diffuse.dds` at install time (nothing from the game goes into git), and
+draws a tankard, a coin pouch and a hall with a banner to match. Hovering a marker expands it to
+the name of what it marks: "Bar", "Town Hall", the trader's own name ("Barman"), "Dust Bandits
+(12)". Two styles to compare, **Ctrl+Shift+M** in game: A, a rusted plaque that stretches into a
+painted sign; B, the glyph bare and off-white with the name as Kenshi's name tag. Scenario
+`markers`; comparison shots in `build/autotest/markers-*`.
 
 ## For Bill
 

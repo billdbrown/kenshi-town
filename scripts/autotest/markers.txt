@@ -1,0 +1,50 @@
+# Overhead markers, styles A (plaque) and B (engraved), collapsed and hovered,
+# from the view the save opens with: the bar, its shopkeeper, the town hall
+# once a Longhouse stands, then a Dust Bandit squad once the grace is over.
+load kt-test
+wait_ready
+wait 2
+unruin Longhouse
+wait 2
+icons a
+screenshot a-0-collapsed
+hover_icon trader
+wait 1
+icons
+screenshot a-1-trader
+hover_icon hq
+wait 1
+screenshot a-2-hq
+hover_icon bar
+wait 1
+screenshot a-3-bar
+hover_icon off
+icons b
+wait 1
+screenshot b-0-collapsed
+hover_icon trader
+wait 1
+screenshot b-1-trader
+hover_icon hq
+wait 1
+screenshot b-2-hq
+hover_icon off
+note grace over, then a squad
+set_task 11
+wait 3
+grace
+spawn_squad view
+wait 4
+icons a
+icons
+hover_icon hostile
+wait 1
+screenshot a-4-hostile
+icons b
+wait 1
+screenshot b-4-hostile
+hover_icon off
+click_icon
+wait 1
+screenshot clicked
+quit

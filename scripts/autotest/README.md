@@ -57,7 +57,7 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `safe on\|off` | remove anyone hostile to the founder within 300 m as they come (raids kill a test) |
 | `relation [value]` | how the Dust Bandits and the player stand; with a value, set it both ways |
 | `grace` | the bandit grace period: wanted, raised (and the relation it will put back), bandits near the Hub |
-| `spawn_squad <metres> [squad sid]` | a roaming Dust Bandit squad that far east of the founder |
+| `spawn_squad <metres\|view> [squad sid]` | a roaming Dust Bandit squad that far east of the founder, or where the camera looks |
 | `raids [off\|hold <h>\|refuse\|noqueue\|force <min h> <max h>]` | report the Dust Bandits' raid queue; hold queued raids back, refuse them at the start, or force one onto the Hub |
 | `nearby [metres]` | who is around the founder, by faction, hostility and activity |
 | `give <count> <item name>` | items into the founder's pack (what fits) |
@@ -65,7 +65,8 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `assign <person> <profile>` | the Roster's Assign |
 | `set_stat <stat number> <value>` | the founder's stored stat (2 = Melee Attack) |
 | `beds` | every bed in the Hub and what it's inside |
-| `icons [on\|off]` | overhead icons: found/drawn per kind, with clip-space and camera debug |
+| `icons [on\|off\|a\|b]` | overhead markers: found/drawn per kind with the first one's label, clip-space and camera debug; switch them, or their style |
+| `hover_icon <bar\|hq\|trader\|hostile\|off>` | hold the hover on the first marker of that kind (expands it to its name) |
 | `click_icon` | what clicking the town hall's icon does (opens the Kenshi Town window) |
 | `select <person>` / `expect selected yes\|no` | try to select a player character both ways; did it take |
 | `who` | what the founder is doing, his jobs, distance to `current` |

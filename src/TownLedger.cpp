@@ -65,6 +65,8 @@ namespace TaskerFields
 #include <mygui/MyGUI_TextBox.h>
 #include <mygui/MyGUI_ProgressBar.h>
 #include <mygui/MyGUI_ImageBox.h>
+#include <mygui/MyGUI_InputManager.h>
+#include <mygui/MyGUI_LayerManager.h>
 #include <mygui/MyGUI_RenderManager.h>
 #include <windows.h>
 #include <mmsystem.h>
@@ -4692,25 +4694,33 @@ namespace
         }
     }
 
-    // ==== Overhead icons (prototype) ============================================
+    // ==== Overhead markers ======================================================
     //
-    // Small icons that sit over things in the world, for a city-builder read
-    // of the town (Bill, 2026-11-23): the bar, the town hall, traders, and the
-    // squads that mean trouble. Each frame a world position is projected to
-    // the screen with the camera's own matrices and a MyGUI image is put
-    // there, on the "Back" layer so Kenshi's panels cover it. The town hall's
-    // icon is clickable and opens the Kenshi Town window: the first step
-    // towards menus that hang off places.
+    // Markers over things in the world, for a city-builder read of the town
+    // (Bill, 2026-11-23): the bar, the town hall, traders, and the squads that
+    // mean trouble. Each frame a world position is projected to the screen
+    // with the camera's own matrices and a small MyGUI group is put there.
     //
-    // Placeholder art (scripts/assets/icons.py). Which things get an icon,
-    // their size and the distance they show from are Bill's to settle.
+    // Drawn in Kenshi's own sign language (scripts/assets/markers.py, made
+    // from the installed game's shop-sign texture). Hovering one expands it
+    // into the full name of what it marks, the way Kenshi names a person you
+    // mouse over. Two styles, switchable, for Bill to compare:
+    //   A plaque: a rusted shop-sign plaque with a painted glyph; on hover it
+    //     stretches into a sign with the name painted on it.
+    //   B engraved: the glyph bare, off-white with a shadow; on hover the name
+    //     shows as Kenshi's own name tag.
+    // Hover is read from the mouse position, so markers don't swallow clicks
+    // meant for the world; only the town hall's takes clicks (it opens the
+    // Kenshi Town window: the first of the menus that hang off places).
 
     enum IconKind { ICON_BAR, ICON_HQ, ICON_TRADER, ICON_HOSTILE, ICON_KINDS };
-    const char* ICON_TEXTURE[ICON_KINDS] = {"kt_icon_bar.png", "kt_icon_hq.png", "kt_icon_trader.png",
-                                            "kt_icon_hostile.png"};
+    const char* ICON_FILE[ICON_KINDS] = {"bar", "hq", "trader", "hostile"};
     const char* ICON_NAME[ICON_KINDS] = {"bar", "town hall", "trader", "hostile squad"};
     const size_t ICON_MAX = 32;
-    const int ICON_PIXELS = 38;
+    const int ICON_PIXELS = 48;           // the art is drawn at this size
+    const int MARK_LEFT = 38;             // style A: the plaque's left part, which holds the glyph
+    const int MARK_RIGHT = 10;            // ...and its right cap (together a square)
+    const int MARK_MID_MAX = 512;         // the sign body's texture width
     const float ICON_FAR = 9000.0f;       // not drawn beyond 900 m
     const float ICON_PEOPLE = 4500.0f;    // people within 450 m of the camera's centre
 
@@ -4718,14 +4728,34 @@ namespace
     {
         Ogre::Vector3 at;
         IconKind kind;
+        std::string label; // what hovering it says
+        const void* key;   // the thing it marks, to keep hover on it from frame to frame
     };
-    MyGUI::ImageBox* g_iconWidgets[ICON_MAX];
-    int g_iconShown[ICON_MAX]; // the kind each widget currently shows, -1 none
+
+    struct Marker
+    {
+        MyGUI::Widget* root;
+        MyGUI::ImageBox* glyph; // the plaque (A), or the left part when expanded; the glyph (B)
+        MyGUI::ImageBox* mid;   // A, expanded: the sign body under the name
+        MyGUI::ImageBox* right; // A, expanded: the right cap
+        MyGUI::TextBox* label;
+        int kind;               // shown, -1 none
+        int style;              // shown with
+        bool expanded;
+        std::string text;
+    };
+    Marker g_marks[ICON_MAX];
+    int g_iconStyle = 0;                  // 0 plaque (A), 1 engraved (B)
     bool g_iconsMade = false;
     bool g_iconsOn = true;
+    const void* g_hoverKey = NULL;        // the thing whose marker the mouse is on
+    std::string g_hoverLabel;             // and what it said (harness)
+    bool g_hoverForced = false;           // the harness is holding a hover
     int g_iconCount[ICON_KINDS] = {0, 0, 0, 0};       // targets found last frame
     int g_iconOnScreen[ICON_KINDS] = {0, 0, 0, 0};    // of those, drawn
     MyGUI::IntPoint g_iconFirst[ICON_KINDS];           // where the first of each kind was drawn
+    std::string g_iconFirstLabel[ICON_KINDS];          // and its label
+    const void* g_iconFirstKey[ICON_KINDS];            // and its key
     Ogre::Vector4 g_iconClip[ICON_KINDS];              // clip-space position of the last of each kind (debug)
     Ogre::Vector3 g_iconCamPos;                        // the camera's position last frame (debug)
     Ogre::Vector3 g_iconShift;                         // world minus render space, last frame (debug)
@@ -4733,8 +4763,15 @@ namespace
     void onIconClick(MyGUI::WidgetPtr w)
     {
         for (size_t i = 0; i < ICON_MAX; ++i)
-            if (g_iconWidgets[i] == w && g_iconShown[i] == ICON_HQ)
+            if (g_marks[i].root == w && g_marks[i].kind == ICON_HQ)
                 showTab(0);
+    }
+
+    std::string markerTexture(int style, int kind, const char* part)
+    {
+        std::ostringstream t;
+        t << "kt_mk_" << (style == 0 ? "a_" : "b_") << ICON_FILE[kind] << part << ".png";
+        return t.str();
     }
 
     void collectIconTargets(std::vector<IconTarget>& out)
@@ -4750,12 +4787,17 @@ namespace
             IconTarget t;
             t.at = all[i]->getPosition();
             t.at.y += 130.0f; // over the roof
+            t.key = all[i];
             if (all[i]->getName() == "Bar")
+            {
                 t.kind = ICON_BAR;
+                t.label = all[i]->getName();
+            }
             else if (!hq && !all[i]->isDestroyed() && all[i]->getName() == "Longhouse" &&
                      buildProgress(all[i]) >= 1.0f)
             {
                 t.kind = ICON_HQ; // the Town Hall: for now, the first Longhouse standing
+                t.label = "Town Hall";
                 hq = true;
             }
             else
@@ -4770,7 +4812,7 @@ namespace
         lektor<RootObject*> found;
         ou->getCharactersWithinSphere(found, ou->player->getCameraCenter(), ICON_PEOPLE, ICON_PEOPLE, 0.0f, 150, 150,
                                       NULL);
-        std::set<const void*> squads; // one icon per squad
+        std::map<const void*, size_t> squads; // one marker per squad; hostile ones count heads
         for (uint32_t i = 0; i < found.size(); ++i)
         {
             Character* c = static_cast<Character*>(found[i]);
@@ -4786,12 +4828,159 @@ namespace
             else
                 continue;
             const void* squad = squadKeyOf(c);
-            if (squad && !squads.insert(squad).second)
-                continue;
+            if (squad)
+            {
+                std::map<const void*, size_t>::iterator seen = squads.find(squad);
+                if (seen != squads.end())
+                {
+                    if (t.kind == ICON_HOSTILE)
+                        out[seen->second].label += "+"; // counted below
+                    continue;
+                }
+                squads[squad] = out.size();
+            }
+            t.key = squad ? squad : static_cast<const void*>(c);
             t.at = c->getPosition();
             t.at.y += 26.0f; // over the head
+            if (t.kind == ICON_TRADER)
+                t.label = c->getName();
+            else
+                t.label = factionName(c->getFaction());
             out.push_back(t);
         }
+        // hostile squads: "Dust Bandits (12)"
+        for (size_t i = 0; i < out.size(); ++i)
+            if (out[i].kind == ICON_HOSTILE)
+            {
+                size_t plus = out[i].label.find('+');
+                size_t extra = plus == std::string::npos ? 0 : out[i].label.size() - plus;
+                std::ostringstream t;
+                t << out[i].label.substr(0, plus) << " (" << extra + 1 << ")";
+                out[i].label = t.str();
+            }
+    }
+
+    void makeMarkers(MyGUI::Gui* gui)
+    {
+        // MyGUI looks textures up in Ogre's "GUI" resource group; the mod's
+        // folder is only in "General" ("Texture 'kt_icon_bar.png' not found").
+        try
+        {
+            Ogre::ResourceGroupManager::getSingleton().addResourceLocation("mods/TownLedger", "FileSystem", "GUI");
+        }
+        catch (...)
+        {
+            ErrorLog("TownLedger: could not add mods/TownLedger to the GUI resource group");
+        }
+        for (size_t i = 0; i < ICON_MAX; ++i)
+        {
+            std::ostringstream name;
+            name << "KenshiTownMarker" << i;
+            Marker& m = g_marks[i];
+            m.root = gui->createWidget<MyGUI::Widget>("PanelEmpty", 0, 0, ICON_PIXELS, ICON_PIXELS,
+                                                      MyGUI::Align::Default, "Middle", name.str());
+            m.glyph = m.root->createWidget<MyGUI::ImageBox>("ImageBox", 0, 0, ICON_PIXELS, ICON_PIXELS,
+                                                            MyGUI::Align::Default);
+            m.mid = m.root->createWidget<MyGUI::ImageBox>("ImageBox", 0, 0, 1, ICON_PIXELS, MyGUI::Align::Default);
+            m.right = m.root->createWidget<MyGUI::ImageBox>("ImageBox", 0, 0, MARK_RIGHT, ICON_PIXELS,
+                                                            MyGUI::Align::Default);
+            m.label = m.root->createWidget<MyGUI::TextBox>("Kenshi_TextboxPaintedText", 0, 0, 1, ICON_PIXELS,
+                                                           MyGUI::Align::Default);
+            MyGUI::Widget* parts[] = {m.glyph, m.mid, m.right, m.label};
+            for (size_t k = 0; k < 4; ++k)
+                parts[k]->setNeedMouseFocus(false); // clicks go to the root, hover is polled
+            m.mid->setImageTexture("kt_mk_a_mid.png");
+            m.right->setImageTexture("kt_mk_a_r.png");
+            m.root->eventMouseButtonClick += MyGUI::newDelegate(onIconClick);
+            m.root->setVisible(false);
+            m.kind = -1;
+            m.style = -1;
+            m.expanded = false;
+        }
+        g_iconsMade = true;
+    }
+
+    // Lay a marker out: collapsed (just the glyph) or expanded (with the name).
+    void layoutMarker(Marker& m, int kind, const std::string& text, bool expanded)
+    {
+        if (m.kind == kind && m.style == g_iconStyle && m.expanded == expanded && (!expanded || m.text == text))
+            return;
+        m.kind = kind;
+        m.style = g_iconStyle;
+        m.expanded = expanded;
+        m.text = text;
+        m.root->setNeedMouseFocus(kind == ICON_HQ);
+        int width = ICON_PIXELS;
+        if (!expanded)
+        {
+            m.glyph->setImageTexture(markerTexture(g_iconStyle, kind, ""));
+            m.glyph->setCoord(0, 0, ICON_PIXELS, ICON_PIXELS);
+            m.mid->setVisible(false);
+            m.right->setVisible(false);
+            m.label->setVisible(false);
+        }
+        else if (g_iconStyle == 0)
+        {
+            // A plaque: left part with the glyph, then the sign body as wide as
+            // the name (shown 1:1 from a long texture, not stretched), then the cap.
+            m.label->setFontName("Kenshi_PaintedTextFont_Medium");
+            m.label->setTextShadow(false);
+            m.label->setTextColour(MyGUI::Colour(0.15f, 0.13f, 0.12f));
+            m.label->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
+            m.label->setCaption(text);
+            int textW = m.label->getTextSize().width;
+            int midW = textW + 14; // room before the cap
+            if (midW > MARK_MID_MAX)
+                midW = MARK_MID_MAX;
+            m.glyph->setImageTexture(markerTexture(0, kind, "_l"));
+            m.glyph->setCoord(0, 0, MARK_LEFT, ICON_PIXELS);
+            m.mid->setCoord(MARK_LEFT, 0, midW, ICON_PIXELS);
+            m.mid->setImageCoord(MyGUI::IntCoord(0, 0, midW, ICON_PIXELS));
+            m.right->setCoord(MARK_LEFT + midW, 0, MARK_RIGHT, ICON_PIXELS);
+            m.label->setCoord(MARK_LEFT + 3, 0, midW - 3, ICON_PIXELS);
+            m.mid->setVisible(true);
+            m.right->setVisible(true);
+            m.label->setVisible(true);
+            width = MARK_LEFT + midW + MARK_RIGHT;
+        }
+        else
+        {
+            // B engraved: the glyph, and the name beside it as Kenshi's name tag.
+            m.label->setFontName("Kenshi_StandardFont_Large");
+            m.label->setTextShadow(true);
+            m.label->setTextShadowColour(MyGUI::Colour(0.28f, 0.28f, 0.28f));
+            m.label->setTextColour(MyGUI::Colour(0.865f, 0.842f, 0.81f));
+            m.label->setTextAlign(MyGUI::Align::Left | MyGUI::Align::VCenter);
+            m.label->setCaption(text);
+            int textW = m.label->getTextSize().width;
+            m.glyph->setImageTexture(markerTexture(1, kind, ""));
+            m.glyph->setCoord(0, 0, ICON_PIXELS, ICON_PIXELS);
+            m.label->setCoord(ICON_PIXELS + 2, 0, textW + 4, ICON_PIXELS);
+            m.mid->setVisible(false);
+            m.right->setVisible(false);
+            m.label->setVisible(true);
+            width = ICON_PIXELS + 2 + textW + 4;
+        }
+        m.root->setSize(width, ICON_PIXELS);
+    }
+
+    // Ctrl+Shift+M flips between the two styles, for comparing them in play.
+    // Only while Kenshi is the window in front: the key state is global.
+    void styleToggleTick()
+    {
+        static bool wasDown = false;
+        HWND front = GetForegroundWindow();
+        DWORD pid = 0;
+        if (front)
+            GetWindowThreadProcessId(front, &pid);
+        bool down = pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+                    (GetAsyncKeyState(VK_SHIFT) & 0x8000) && (GetAsyncKeyState('M') & 0x8000);
+        if (down && !wasDown)
+        {
+            g_iconStyle = 1 - g_iconStyle;
+            toast(g_iconStyle == 0 ? "Markers: A, plaque" : "Markers: B, engraved");
+        }
+        wasDown = down;
     }
 
     void updateIcons()
@@ -4801,29 +4990,8 @@ namespace
         if (!gui || (!g_iconsMade && !inGame))
             return;
         if (!g_iconsMade)
-        {
-            // MyGUI looks textures up in Ogre's "GUI" resource group; the mod's
-            // folder is only in "General" ("Texture 'kt_icon_bar.png' not found").
-            try
-            {
-                Ogre::ResourceGroupManager::getSingleton().addResourceLocation("mods/TownLedger", "FileSystem", "GUI");
-            }
-            catch (...)
-            {
-                ErrorLog("TownLedger: could not add mods/TownLedger to the GUI resource group");
-            }
-            for (size_t i = 0; i < ICON_MAX; ++i)
-            {
-                std::ostringstream name;
-                name << "KenshiTownIcon" << i;
-                g_iconWidgets[i] = gui->createWidget<MyGUI::ImageBox>("ImageBox", 0, 0, ICON_PIXELS, ICON_PIXELS,
-                                                                      MyGUI::Align::Default, "Middle", name.str());
-                g_iconWidgets[i]->setVisible(false);
-                g_iconWidgets[i]->eventMouseButtonClick += MyGUI::newDelegate(onIconClick);
-                g_iconShown[i] = -1;
-            }
-            g_iconsMade = true;
-        }
+            makeMarkers(gui);
+        styleToggleTick();
         for (int k = 0; k < ICON_KINDS; ++k)
             g_iconCount[k] = g_iconOnScreen[k] = 0;
 
@@ -4854,7 +5022,11 @@ namespace
                 shift.y = 0.0f;
             }
             g_iconShift = shift;
-            for (size_t i = 0; i < targets.size() && used < ICON_MAX; ++i)
+
+            // Where each would go, first; then which one the mouse is on.
+            std::vector<MyGUI::IntPoint> at(targets.size());
+            std::vector<bool> shown(targets.size(), false);
+            for (size_t i = 0; i < targets.size(); ++i)
             {
                 ++g_iconCount[targets[i].kind];
                 Ogre::Vector3 local = targets[i].at - shift;
@@ -4866,24 +5038,64 @@ namespace
                 float nx = clip.x / clip.w, ny = clip.y / clip.w;
                 if (nx < -1.0f || nx > 1.0f || ny < -1.0f || ny > 1.0f)
                     continue;
-                int px = int((nx * 0.5f + 0.5f) * view.width) - ICON_PIXELS / 2;
-                int py = int((0.5f - ny * 0.5f) * view.height) - ICON_PIXELS;
-                MyGUI::ImageBox* w = g_iconWidgets[used];
-                if (g_iconShown[used] != targets[i].kind)
+                at[i] = MyGUI::IntPoint(int((nx * 0.5f + 0.5f) * view.width) - ICON_PIXELS / 2,
+                                        int((0.5f - ny * 0.5f) * view.height) - ICON_PIXELS);
+                shown[i] = true;
+            }
+            if (!g_hoverForced)
+            {
+                const MyGUI::IntPoint mouse = MyGUI::InputManager::getInstance().getMousePosition();
+                const void* hover = NULL;
+                for (size_t i = 0; i < targets.size(); ++i)
                 {
-                    w->setImageTexture(ICON_TEXTURE[targets[i].kind]);
-                    w->setNeedMouseFocus(targets[i].kind == ICON_HQ);
-                    g_iconShown[used] = targets[i].kind;
+                    if (!shown[i])
+                        continue;
+                    // the hovered one keeps its expanded width, so the name doesn't flicker
+                    int w = ICON_PIXELS;
+                    if (targets[i].key == g_hoverKey)
+                        for (size_t k = 0; k < ICON_MAX; ++k)
+                            if (g_marks[k].root && g_marks[k].root->getVisible() && g_marks[k].expanded)
+                                w = g_marks[k].root->getWidth();
+                    if (mouse.left >= at[i].left && mouse.left < at[i].left + w && mouse.top >= at[i].top &&
+                        mouse.top < at[i].top + ICON_PIXELS)
+                    {
+                        hover = targets[i].key;
+                        if (hover == g_hoverKey)
+                            break; // stay on the one already open
+                    }
                 }
-                w->setCoord(px, py, ICON_PIXELS, ICON_PIXELS);
-                w->setVisible(true);
+                g_hoverKey = hover;
+            }
+            g_hoverLabel.clear();
+
+            MyGUI::Widget* top = NULL;
+            for (size_t i = 0; i < targets.size() && used < ICON_MAX; ++i)
+            {
+                if (!shown[i])
+                    continue;
+                Marker& m = g_marks[used];
+                bool hovered = g_hoverKey && targets[i].key == g_hoverKey;
+                layoutMarker(m, targets[i].kind, targets[i].label, hovered);
+                m.root->setPosition(at[i]);
+                m.root->setVisible(true);
+                if (hovered)
+                {
+                    top = m.root;
+                    g_hoverLabel = targets[i].label;
+                }
                 if (g_iconOnScreen[targets[i].kind]++ == 0)
-                    g_iconFirst[targets[i].kind] = MyGUI::IntPoint(px, py);
+                {
+                    g_iconFirst[targets[i].kind] = at[i];
+                    g_iconFirstLabel[targets[i].kind] = targets[i].label;
+                    g_iconFirstKey[targets[i].kind] = targets[i].key;
+                }
                 ++used;
             }
+            if (top)
+                MyGUI::LayerManager::getInstance().upLayerItem(top); // the open one over its neighbours
         }
         for (size_t i = used; i < ICON_MAX; ++i)
-            g_iconWidgets[i]->setVisible(false);
+            g_marks[i].root->setVisible(false);
     }
 
     // ==== Raids (probe) ==========================================================
@@ -5982,12 +6194,16 @@ namespace
             atWrite("INFO", t.str());
             return true;
         }
-        if (cmd == "spawn_squad") // spawn_squad <metres east of the founder> [squad sid]: a roaming Dust Bandit squad
+        if (cmd == "spawn_squad") // spawn_squad <metres east of the founder | view> [squad sid]: a roaming Dust Bandit squad; "view" puts it where the camera looks
         {
             float metres = 150;
             std::string sid = "1302-gamedata.base"; // Dust Bandit squad: patrols, assaults towns it passes
             std::istringstream in(rest);
-            in >> metres >> sid;
+            std::string where;
+            in >> where >> sid;
+            bool inView = where == "view";
+            if (!inView)
+                std::istringstream(where) >> metres;
             Faction* them = ou->factionMgr->getFactionByName(RAID_FACTION);
             GameData* squad = ou->gamedata.getData(sid);
             Character* f = atFounder();
@@ -5996,8 +6212,9 @@ namespace
                 atCheck(false, "spawn_squad: missing the faction, the squad or the founder");
                 return true;
             }
-            Ogre::Vector3 at = f->getPosition();
-            at.x += metres * 10.0f;
+            Ogre::Vector3 at = inView ? ou->player->getCameraCenter() : f->getPosition();
+            if (!inView)
+                at.x += metres * 10.0f;
             Platoon* made = ou->theFactory->createRandomSquad(them, at, NULL, 20, NULL, squad, NULL, NULL, NULL, false,
                                                               hand(), NULL, 1.0f, SQ_ROAMING, false);
             atWrite("INFO", std::string("spawn_squad '") + squad->name + "': " + (made ? "made" : "NOT made"));
@@ -6037,15 +6254,19 @@ namespace
             atWrite("INFO", t.str());
             return true;
         }
-        if (cmd == "icons") // icons [on|off]: what the overhead icons found and drew last frame
+        if (cmd == "icons") // icons [on|off|a|b]: what the overhead markers found and drew; switch them or their style
         {
             if (rest == "on" || rest == "off")
                 g_iconsOn = rest == "on";
+            if (rest == "a" || rest == "b")
+                g_iconStyle = rest == "a" ? 0 : 1;
             std::ostringstream t;
-            t << "icons " << (g_iconsOn ? "on" : "off") << ":";
+            t << "icons " << (g_iconsOn ? "on" : "off") << ", style " << (g_iconStyle == 0 ? "a" : "b") << ":";
             for (int k = 0; k < ICON_KINDS; ++k)
             {
                 t << " " << ICON_NAME[k] << " " << g_iconOnScreen[k] << "/" << g_iconCount[k];
+                if (g_iconOnScreen[k])
+                    t << " '" << g_iconFirstLabel[k] << "'";
                 if (g_iconCount[k])
                     t << " [clip " << int(g_iconClip[k].x) << "," << int(g_iconClip[k].y) << "," << int(g_iconClip[k].z)
                       << "," << int(g_iconClip[k].w) << "]";
@@ -6060,13 +6281,23 @@ namespace
             atWrite("INFO", t.str());
             return true;
         }
+        if (cmd == "hover_icon") // hover_icon <bar|hq|trader|hostile|off>: hold the mouse on the first such marker
+        {
+            g_hoverForced = rest != "off";
+            g_hoverKey = NULL;
+            for (int k = 0; k < ICON_KINDS && g_hoverForced; ++k)
+                if (rest == ICON_FILE[k] && g_iconOnScreen[k])
+                    g_hoverKey = g_iconFirstKey[k];
+            atWrite("INFO", g_hoverKey ? "hovering a " + rest + " marker" : "hover: " + rest);
+            return true;
+        }
         if (cmd == "click_icon") // click_icon: what clicking the town hall's icon does
         {
             bool had = false;
             for (size_t i = 0; i < ICON_MAX; ++i)
-                if (g_iconsMade && g_iconWidgets[i]->getVisible() && g_iconShown[i] == ICON_HQ)
+                if (g_iconsMade && g_marks[i].root->getVisible() && g_marks[i].kind == ICON_HQ)
                 {
-                    onIconClick(g_iconWidgets[i]);
+                    onIconClick(g_marks[i].root);
                     had = true;
                     break;
                 }

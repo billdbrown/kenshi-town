@@ -58,6 +58,10 @@ if /i "%~1"=="install" (
     REM vanilla data rather than kept in the repo.
     python -I "%REPO%\scripts\build_mods.py" install
     if errorlevel 1 exit /b 1
+    REM The overhead markers are cut from the installed game's own sign
+    REM texture, so they are made here and never kept in the repo. Needs PIL.
+    python "%REPO%\scripts\assets\markers.py" "%KENSHI_DIR%\mods\TownLedger"
+    if errorlevel 1 exit /b 1
 )
 
 endlocal
