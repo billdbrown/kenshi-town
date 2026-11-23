@@ -3601,8 +3601,12 @@ namespace
         p.text = "Ruined: select one, press Repair";
         std::vector<Building*> all;
         hubBuildings(all);
+        // Progress alone isn't enough: a repaired ruin reached 100% while
+        // Kenshi still showed it under construction (2026-11-22), so its own
+        // "complete" flag has to be set too.
         float best = -1.0f;
         bool any = false;
+        Building* finished = NULL;
         for (size_t i = 0; i < all.size(); ++i)
         {
             if (lowerCase(all[i]->getName()).find("longhouse") == std::string::npos)
@@ -3610,14 +3614,20 @@ namespace
             any = true;
             if (all[i]->isDestroyed())
                 continue;
+            Building::ConstructionState* own = all[i]->getBuildState_ActualNonShared();
             float done = buildProgress(all[i]);
+            if (done >= 1.0f && !(own && own->isComplete))
+                done = 0.99f;
+            if (done >= 1.0f)
+                finished = all[i];
             if (done > best)
                 best = done;
         }
         if (!any)
             p.text = "No Longhouse left in the Hub";
-        if (best >= 1.0f)
+        if (finished)
         {
+            actionLog("[quest] Town Hall done: " + finished->getName() + ": " + describeRepairState(finished));
             p.have = 1;
             p.text = "Repaired";
             return true;
