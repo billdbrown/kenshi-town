@@ -99,6 +99,11 @@ guards leaving), the selection lock, the ankh (construct it, use it, screenshot 
   and four static guards), 6 Mercenary Guild (relaxing in the bar), 1 Hounds, 2 Vagrants and
   the founder. The Hub's Outlaw resident squad ("holy hub hideout") has no members in the
   game data, only notes. So the contract counts 0 guards and charges 0. Not tested further.
+- **Ankh: works** (scenario `ankh`). The Engineer builds it from 2 building materials (so the
+  collision box was what it lacked), it renders as modelled, and the founder uses it: he goes
+  to the spot in front of it and is "Operating machine", crouched low at its base. The use is
+  the operate-machinery job (87); SIT_ON_THRONE (255) does nothing. The harness's camera
+  can't get close enough to judge the bow itself: see `build/autotest/ankh2-*/z.png`.
 
 ## For Bill
 
@@ -157,5 +162,7 @@ guards leaving), the selection lock, the ankh (construct it, use it, screenshot 
   four Trade Ninja guards. Or spawn a real Outlaw squad at claim.
 - The Town button draws on top of Kenshi's conversation window (seen during the Dust Boss's
   shakedown).
+- **Ankh: have a look at the bow up close.** It's built and used in the tests; whether the
+  pose and the distance read well at 2x height is for your eye.
 - Idea, not built: an alert "builders can't find building materials" when a site needs
   materials and no Building Materials store holds any (a general chest doesn't count).

@@ -1,0 +1,21 @@
+# The Faience Ankh (dev mod): a custom-model building that can be placed,
+# built by the Engineer from 2 building materials, and used. "Use" is the
+# operate-machinery job (87) on its throne-style function, whose animation is
+# the fogmen's bowing: the founder kneels at the building's origin, in front
+# of the model. (SIT_ON_THRONE, 255, does nothing.)
+load kt-test
+wait_ready
+safe on
+speed 3
+give 2 Building Materials
+place_near 3-KenshiTownDev.mod 0 150
+job 125 current
+wait 20
+expect complete current
+job 87 current
+wait 30
+who
+camera_on current
+wait 3
+screenshot ankh-worship
+quit
