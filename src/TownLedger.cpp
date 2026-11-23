@@ -2688,6 +2688,18 @@ namespace
         cleanupList(names);
         std::vector<Building*> all;
         hubBuildings(all);
+        // The Hub comes with half-built gates and walls. Once they're ours they
+        // sit in the builders' queue, so an Engineer's first act was to walk
+        // off and work on the gates (Bill, 2026-11-22). Finish whatever was
+        // standing half-built; ruins stay ruins, for Repair when wanted.
+        // (Before the removals, which may leave freed buildings listed.)
+        std::map<std::string, int> finished;
+        for (size_t i = 0; i < all.size(); ++i)
+            if (!names.count(all[i]->getName()) && !all[i]->isDestroyed() && buildProgress(all[i]) < 1.0f)
+            {
+                all[i]->setConstructionProgress(1.0f);
+                ++finished[all[i]->getName()];
+            }
         std::map<std::string, int> removed;
         for (size_t i = 0; i < all.size(); ++i)
             if (names.count(all[i]->getName()))
@@ -2701,6 +2713,8 @@ namespace
             out << " nothing on the list was there";
         for (std::map<std::string, int>::iterator it = removed.begin(); it != removed.end(); ++it)
             out << (it == removed.begin() ? " removed " : ", ") << it->second << " x " << it->first;
+        for (std::map<std::string, int>::iterator it = finished.begin(); it != finished.end(); ++it)
+            out << (it == finished.begin() ? "; finished " : ", ") << it->second << " x " << it->first;
         return out.str();
     }
 

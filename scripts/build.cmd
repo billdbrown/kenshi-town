@@ -49,6 +49,10 @@ if /i "%~1"=="install" (
     )
     xcopy /y /i "%REPO%\mod\TownLedger" "%KENSHI_DIR%\mods\TownLedger" >nul
     copy /y "%REPO%\build\TownLedger.dll" "%KENSHI_DIR%\mods\TownLedger\TownLedger.dll" >nul
+    if errorlevel 1 (
+        echo NOT installed: TownLedger.dll is in use. Close Kenshi and run this again.
+        exit /b 1
+    )
     echo Installed to "%KENSHI_DIR%\mods\TownLedger"
     REM The data mods, TownLedger.mod among them, are generated from the
     REM vanilla data rather than kept in the repo.
