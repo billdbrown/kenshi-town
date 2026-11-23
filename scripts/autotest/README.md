@@ -21,6 +21,11 @@ completes anything of ours at 100%. So it proves "task waits for completion", no
 The runner backs up and restores the plugin's state files (`contracts.txt` and co.), so a
 scenario that jumps tasks doesn't change the save's record for the next run.
 
+During a run the plugin holds Kenshi's autosave timer at zero (an early long run overwrote
+the player's autosave slots), and sets Kenshi's "current game" name to the loaded save
+(`SaveManager::load(name)` leaves it at the last autosave, and the plugin keys its per-game
+record on it).
+
 The test save is **`kt-test`**: a "Kenshi Town: The Hub" new game, saved right
 after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 
@@ -49,6 +54,13 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `people` | every player character: name, tag, squad, citizen or retinue, activity |
 | `expect gate\|people\|citizens <n>` | counts |
 | `expect gate_modest` / `expect gate_outside` | arrivals' stats in range; last listed arrival outside the walls |
+| `safe on\|off` | remove anyone hostile to the founder within 300 m as they come (raids kill a test) |
+| `nearby [metres]` | who is around the founder, by faction, hostility and activity |
+| `give <count> <item name>` | items into the founder's pack (what fits) |
+| `wait_task <n> [secs]` | wait for the guided start to reach task n; fails on timeout or overshoot |
+| `assign <person> <profile>` | the Roster's Assign |
+| `set_stat <stat number> <value>` | the founder's stored stat (2 = Melee Attack) |
+| `beds` | every bed in the Hub and what it's inside |
 | `who` | what the founder is doing, his jobs, distance to `current` |
 | `construct <name\|current> [secs]` | does builders' work on it until complete (default 60 s) |
 | `set_task <n>` | jumps the guided start to task n |

@@ -1,0 +1,105 @@
+# The whole guided start, task 1 to 10, driven end to end. The founder does
+# the building himself on the Engineer job, from materials in his pack and
+# then from the store. Each task must wait for its real condition.
+# Safe mode removes raiders: a Dust Bandit raid killed the founder 90 s in.
+# (Not covered: the research itself. Sites are placed directly, which skips
+# the build menu's research lock.)
+load kt-test
+wait_ready
+expect task 1
+safe on
+speed 3
+# His pack holds three building materials: enough for the bench.
+give 3 Building Materials
+
+# 1. Repair a Longhouse: your Town Hall
+repair Longhouse
+job 125 current
+wait 4
+expect task 1
+screenshot g01-town-hall
+wait_task 2 120
+
+# 2. Set up a research bench
+place_near 1875-gamedata.base 60 0
+wait 4
+expect task 2
+screenshot g02-bench
+wait_task 3 120
+
+# 3. Research storage, build a materials store
+# The store needs 1 Building Materials and 1 Iron Plates.
+give 1 Building Materials
+place_near 2940-gamedata.base 90 40
+wait 6
+expect task 3
+screenshot g03-store-needs-plate
+give 1 Iron Plates
+wait_task 4 120
+pick Storage: Building Materials
+stock 20 Building Materials
+
+# 4. Open a stone mine
+place_near 1509-gamedata.base 0 130
+wait 4
+expect task 4
+screenshot g04-mine
+wait_task 5 120
+
+# 5. Process stone into materials
+# The processor needs 10 Building Materials (from the store) and 6 Iron Plates.
+place_near 1863-gamedata.base -130 60
+wait 6
+expect task 5
+screenshot g05-processor-needs-plates
+give 6 Iron Plates
+wait_task 6 180
+
+# 6. Take in your first citizen
+screenshot g06-citizen
+arrive
+wait 4
+expect task 6
+accept 0
+wait_task 7 30
+
+# 7. Give a citizen a job
+screenshot g07-job
+assign 1 Miner
+people
+wait_task 8 30
+
+# 8. A bed for everyone (two people, two beds)
+# A camp bed needs 1 Building Materials and a Sleeping Bag.
+# (His pack takes one Sleeping Bag at a time.)
+give 1 Sleeping Bag
+place_near 16845-nodes_otto1.mod 50 -60
+wait 15
+expect task 8
+screenshot g08-beds
+give 1 Sleeping Bag
+place_near 16845-nodes_otto1.mod 80 -60
+wait_task 9 180
+
+# 9. Stockpile 100 building materials (one store holds about 100, so a second)
+screenshot g09-stockpile
+pick Storage: Building Materials
+stock 60 Building Materials
+wait 4
+expect task 9
+place_near 2940-gamedata.base 140 -40 done
+stock 80 Building Materials
+wait_task 10 30
+
+# 10. Ready a guard of your own
+screenshot g10-guard
+set_stat 2 10
+wait 4
+expect task 10
+set_stat 2 16
+wait_task 11 30
+wait 2
+screenshot g11-done
+people
+who
+quit

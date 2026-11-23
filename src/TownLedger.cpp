@@ -3813,6 +3813,50 @@ namespace
 
     // A building of ours in the Hub whose name contains `nameContains`:
     // finished, under construction (the bar follows it) or not started.
+    // The town's own beds: every bed in the Hub except the Bar's. The Bar's
+    // three inn beds became "ours" with the claim, so "A bed for everyone"
+    // completed with no bed built and the no-bed alert never showed (autotest,
+    // 2026-11-23). The bar stays the barkeep's.
+    void townBeds(std::vector<Building*>& out)
+    {
+        std::vector<Building*> all;
+        hubWithFunction(BF_BED, all);
+        out.clear();
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            Building* parent = all[i]->furnitureParentBuilding();
+            if (parent && parent->getName() == "Bar")
+                continue;
+            out.push_back(all[i]);
+        }
+    }
+
+    // "6 Iron Plates": the first thing a construction site hasn't been given
+    // yet (with "+" if there's more than one kind). Empty when it has it all.
+    std::string missingMaterials(Building* b)
+    {
+        Building::ConstructionState* own = b->getBuildState_ActualNonShared();
+        if (!own || own->isComplete)
+            return "";
+        lektor<Building::ConstructionState::BuildMaterial*> needed;
+        own->getNeededMats(needed);
+        std::string first;
+        int kinds = 0;
+        for (uint32_t i = 0; i < needed.size(); ++i)
+        {
+            Building::ConstructionState::BuildMaterial* m = needed[i];
+            if (!m || !m->mat || m->getNumRemaining() < 0.5f)
+                continue;
+            if (kinds++ == 0)
+            {
+                std::ostringstream t;
+                t << int(m->getNumRemaining() + 0.5f) << " " << m->mat->name;
+                first = t.str();
+            }
+        }
+        return kinds > 1 ? first + " +" : first;
+    }
+
     bool qBuiltFrom(const std::vector<Building*>& all, const char* nameContains, QuestProgress& p)
     {
         p.have = 0;
@@ -3822,6 +3866,7 @@ namespace
             return false;
         Faction* mine = ou->player->getFaction();
         float best = -1.0f;
+        Building* site = NULL; // the furthest-along unfinished one
         for (size_t i = 0; i < all.size(); ++i)
             if (all[i]->getFaction() == mine && !all[i]->isDestroyed() &&
                 all[i]->getName().find(nameContains) != std::string::npos)
@@ -3835,7 +3880,10 @@ namespace
                 else if (done >= 1.0f)
                     done = 0.99f;
                 if (done > best)
+                {
                     best = done;
+                    site = all[i];
+                }
                 if (best >= 1.0f)
                     actionLog("[quest] built: " + all[i]->getName() + ": " + describeRepairState(all[i]));
             }
@@ -3852,6 +3900,13 @@ namespace
             std::ostringstream t;
             t << "Building " << p.have << "%";
             p.text = t.str();
+            // What the site is still waiting for. A materials store needs an
+            // Iron Plate, a stone processor six, a camp bed a Sleeping Bag:
+            // "Building 0%" hid that, and a builder with nothing he can use
+            // just wanders off (autotest, 2026-11-23).
+            std::string missing = site ? missingMaterials(site) : std::string();
+            if (!missing.empty())
+                p.text = "Needs " + missing;
         }
         return false;
     }
@@ -3964,7 +4019,7 @@ namespace
             return false;
         Faction* mine = ou->player->getFaction();
         std::vector<Building*> all;
-        hubWithFunction(BF_BED, all);
+        townBeds(all);
         int beds = 0;
         for (size_t i = 0; i < all.size(); ++i)
             if (all[i]->getFaction() == mine && buildProgress(all[i]) >= 1.0f)
@@ -4252,7 +4307,7 @@ namespace
         }
 
         std::vector<Building*> bedList; // indoor beds too
-        hubWithFunction(BF_BED, bedList);
+        townBeds(bedList);
         for (size_t i = 0; i < bedList.size(); ++i)
             if (bedList[i]->getFaction() == mine && !bedList[i]->isDestroyed())
                 ++beds;
@@ -4368,7 +4423,12 @@ namespace
             if (!show)
                 continue;
             const Toast& t = g_toasts[g_toasts.size() - 1 - i];
-            float w = lineWidth(t.text);
+            // Toasts may run wider than the column: capped at the column's
+            // width, the long "Done: ... (+300 cats)" ones were cut off at both
+            // ends (autotest screenshots, 2026-11-23).
+            float w = 0.02f + 0.0062f * float(t.text.size());
+            if (w > 0.46f)
+                w = 0.46f;
             g_toastLines[i]->setRealCoord(COL_RIGHT - w, g_columnY, w, HUD_H);
             g_toastLines[i]->setCaption(t.text);
             g_columnY += HUD_H + 0.004f;
@@ -4734,6 +4794,37 @@ namespace
 
     float g_atLastDistance = 0.0f; // metres from the Hub centre of the last arrival `gate` listed
 
+    // Safe mode: a test of the town shouldn't end because a Dust Bandit raid
+    // walked in and killed the founder (it did, 2026-11-23, 90 s into a run).
+    std::string g_atLoadName; // the save the scenario loaded
+    bool g_atSafe = false;
+    int g_atSafeRemoved = 0;
+
+    void atKeepSafe()
+    {
+        if (!g_atSafe || !atInGame() || g_frame % 60 != 0)
+            return;
+        Character* f = ou->player->getAllPlayerCharacters()[0];
+        lektor<RootObject*> found;
+        ou->getCharactersWithinSphere(found, f->getPosition(), 3000.0f, 3000.0f, 0.0f, 80, 80, f);
+        std::map<std::string, int> gone;
+        for (uint32_t i = 0; i < found.size(); ++i)
+        {
+            Character* c = static_cast<Character*>(found[i]);
+            if (!c || c == f || c->getFaction() == f->getFaction() || !c->isEnemy(f, false))
+                continue;
+            ++gone[factionName(c->getFaction())];
+            ou->destroy(c, false, "Kenshi Town autotest: safe mode");
+            ++g_atSafeRemoved;
+        }
+        for (std::map<std::string, int>::iterator g = gone.begin(); g != gone.end(); ++g)
+        {
+            std::ostringstream t;
+            t << "safe mode removed " << g->second << " x " << g->first;
+            atWrite("INFO", t.str());
+        }
+    }
+
     Character* atFounder()
     {
         const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
@@ -4817,8 +4908,9 @@ namespace
             SaveManager* sm = SaveManager::getSingleton();
             if (!sm)
                 return elapsed > 120000 ? (atFinish("no SaveManager"), true) : false;
-            atWrite("INFO", "loading save " + rest);
+            atWrite("INFO", "loading save " + rest + " (current game was '" + sm->getCurrentGame() + "')");
             sm->load(rest);
+            g_atLoadName = rest;
             return true;
         }
         if (cmd == "wait_ready") // in a game, Hub found and ours, settled for 5 s
@@ -4830,6 +4922,20 @@ namespace
                 g_atReadySince = 0;
             else if (!g_atReadySince)
                 g_atReadySince = GetTickCount();
+            // SaveManager::load(name) leaves "current game" at whatever Kenshi
+            // last saved (an autosave), and the plugin keys its per-game record
+            // on that name: a run woke up on another save's task (2026-11-23).
+            // The Load menu sets it; do the same, and look the record up again.
+            SaveManager* sm2 = SaveManager::getSingleton();
+            if (ready && sm2 && !g_atLoadName.empty() && sm2->getCurrentGame() != g_atLoadName)
+            {
+                atWrite("INFO", "current game was '" + sm2->getCurrentGame() + "', set to '" + g_atLoadName + "'");
+                *reinterpret_cast<std::string*>(sm2) = g_atLoadName; // SaveManager::currentGame, offset 0
+                g_currentValid = false;
+                g_questAnnounced = -1;
+                g_atReadySince = 0;
+                return false;
+            }
             if (ready && GetTickCount() - g_atReadySince > 5000)
             {
                 Contract* c = currentContract();
@@ -5144,8 +5250,12 @@ namespace
             std::ostringstream t;
             t << "placed " << (b ? b->getName() + ": " + describeRepairState(b) : std::string("nothing"));
             if (b)
+            {
+                Ogre::Vector3 got = b->getPosition();
                 t << "; in " << (b->getTown() == hubBase() ? "the base" : b->getTown() ? "another town part" : "NO town")
-                  << ", faction " << factionName(b->getFaction());
+                  << ", faction " << factionName(b->getFaction()) << "; asked " << int(pos.x) << "," << int(pos.z)
+                  << " (founder at y " << int(at.y) << "), got " << int(got.x) << "," << int(got.y) << "," << int(got.z);
+            }
             atWrite("INFO", t.str());
             return true;
         }
@@ -5247,6 +5357,159 @@ namespace
             }
             return true;
         }
+        if (cmd == "wait_task") // wait_task <n> [secs]: until the guided start reaches task n
+        {
+            int n = 0;
+            float limit = 60;
+            std::istringstream(rest) >> n >> limit;
+            Contract* c = currentContract();
+            int now = c ? c->quest + 1 : 0;
+            if (now >= n)
+            {
+                std::ostringstream t;
+                t << "task " << n << " reached after " << elapsed / 1000 << " s";
+                atCheck(now == n, t.str() + (now == n ? "" : " (overshot)"));
+                return true;
+            }
+            if (elapsed > DWORD(limit * 1000.0f))
+            {
+                std::ostringstream t;
+                t << "task " << n << " not reached in " << int(limit) << " s: still on " << now << " ("
+                  << g_questShown.text << ")";
+                atCheck(false, t.str());
+                return true;
+            }
+            return false;
+        }
+        if (cmd == "give") // give <count> <item name>: into the founder's inventory
+        {
+            int count = 0;
+            std::istringstream in2(rest);
+            in2 >> count;
+            std::string item;
+            std::getline(in2, item);
+            size_t st = item.find_first_not_of(" \t");
+            item = st == std::string::npos ? "" : item.substr(st);
+            GameData* d = findItemData(item);
+            Character* f = atFounder();
+            if (!f || !d || !g_createItem)
+            {
+                atCheck(false, "give: no founder or no item '" + item + "'");
+                return true;
+            }
+            int given = 0;
+            RootObject* who = f;
+            for (int n = 0; n < count; ++n)
+            {
+                hand none;
+                Item* it = g_createItem(ou->theFactory, d, &none, NULL, NULL, -1, NULL);
+                if (!it || !who->giveItem(it, false, true))
+                    break;
+                ++given;
+            }
+            std::ostringstream t;
+            t << "gave " << bareName(f) << " " << given << " x " << item;
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "assign") // assign <person index> <profile name>: as the Roster's Assign does
+        {
+            size_t i = 0;
+            std::string profile;
+            std::istringstream(rest) >> i >> profile;
+            const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+            Profile* pr = findProfile(profile);
+            if (i >= people.size() || !pr)
+            {
+                atCheck(false, "assign " + rest + ": no such person or profile");
+                return true;
+            }
+            atWrite("INFO", "assign: " + applyProfile(people[i], *pr));
+            return true;
+        }
+        if (cmd == "set_stat") // set_stat <stat number> <value>: the founder's stored stat
+        {
+            int stat = 0;
+            float v = 0;
+            std::istringstream(rest) >> stat >> v;
+            Character* f = atFounder();
+            CharStats* st = f ? f->getStats() : NULL;
+            if (!st)
+            {
+                atCheck(false, "set_stat: no founder");
+                return true;
+            }
+            st->getStatRef(StatsEnumerated(stat)) = v;
+            std::ostringstream t;
+            t << bareName(f) << ": " << CharStats::getStatName(StatsEnumerated(stat)) << " set to " << v;
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "safe") // safe on|off: remove anyone hostile to the founder within 300 m, as they come
+        {
+            g_atSafe = rest != "off";
+            atWrite("INFO", g_atSafe ? "safe mode on: hostiles near the founder are removed" : "safe mode off");
+            return true;
+        }
+        if (cmd == "autosave_timer") // report Kenshi's autosave timer (SaveManager +0x118)
+        {
+            SaveManager* sm3 = SaveManager::getSingleton();
+            std::ostringstream t;
+            t << "autosave timer " << (sm3 ? *reinterpret_cast<float*>(reinterpret_cast<char*>(sm3) + 0x118) : -1.0f);
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "beds") // beds: every bed the town counts, and what it's inside
+        {
+            std::vector<Building*> beds;
+            hubWithFunction(BF_BED, beds);
+            std::map<std::string, int> groups;
+            for (size_t i = 0; i < beds.size(); ++i)
+            {
+                Building* parent = beds[i]->furnitureParentBuilding();
+                std::ostringstream key;
+                key << beds[i]->getName() << " in " << (parent ? parent->getName() : std::string("the open")) << ", "
+                    << factionName(beds[i]->getFaction()) << (atComplete(beds[i]) ? "" : ", unfinished");
+                ++groups[key.str()];
+            }
+            std::ostringstream t;
+            t << "beds: " << beds.size() << ";";
+            for (std::map<std::string, int>::iterator g = groups.begin(); g != groups.end(); ++g)
+                t << " " << g->second << " x " << g->first << ";";
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "nearby") // nearby [metres]: who is around the founder, and who is hostile to him
+        {
+            float metres = 60;
+            std::istringstream(rest) >> metres;
+            Character* f = atFounder();
+            if (!f)
+            {
+                atCheck(false, "nearby: no founder");
+                return true;
+            }
+            lektor<RootObject*> found;
+            ou->getCharactersWithinSphere(found, f->getPosition(), metres * 10.0f, metres * 10.0f, 0.0f, 60, 60, f);
+            std::map<std::string, int> groups;
+            for (uint32_t i = 0; i < found.size(); ++i)
+            {
+                Character* c = static_cast<Character*>(found[i]);
+                if (!c)
+                    continue;
+                std::ostringstream key;
+                key << factionName(c->getFaction()) << (c->isEnemy(f, false) ? " (HOSTILE)" : "") << ", "
+                    << (c->isDead() ? "dead" : c->isDown() ? "down" : currentActivity(c));
+                ++groups[key.str()];
+            }
+            std::ostringstream t;
+            t << "nearby (" << int(metres) << " m of " << bareName(f) << ", who is "
+              << (f->isDead() ? "DEAD" : f->isDown() ? "DOWN" : "up") << "): " << found.size() << " people;";
+            for (std::map<std::string, int>::iterator g = groups.begin(); g != groups.end(); ++g)
+                t << " " << g->second << " x " << g->first << ";";
+            atWrite("INFO", t.str());
+            return true;
+        }
         if (cmd == "who") // who: what the founder is doing and has been told to do
         {
             Character* f = atFounder();
@@ -5256,7 +5519,25 @@ namespace
                 return true;
             }
             std::ostringstream t;
-            t << bareName(f) << ": doing '" << currentActivity(f) << "'; jobs: " << describeJobs(f);
+            t << bareName(f) << " at " << int(f->getPosition().x) << "," << int(f->getPosition().z) << ": doing '"
+              << currentActivity(f) << "'; jobs: " << describeJobs(f);
+            if (Inventory* inv = f->getInventory())
+            {
+                lektor<InventorySection*>& sections = inv->getAllSections();
+                int cells = 0, used = 0, items = 0;
+                for (uint32_t k = 0; k < sections.size(); ++k)
+                {
+                    InventorySection* sec = sections[k];
+                    if (!sec || sec->isAnEquippedItemSection || sec->width <= 0 || sec->height <= 0)
+                        continue;
+                    cells += sec->width * sec->height;
+                    const Ogre::vector<InventorySection::SectionItem>::type& its = sec->getItems();
+                    items += int(its.size());
+                    for (size_t q = 0; q < its.size(); ++q)
+                        used += int(its[q].w) * int(its[q].h);
+                }
+                t << "; pack " << items << " items, " << used << "/" << cells << " cells";
+            }
             if (g_atCurrent)
             {
                 Ogre::Vector3 a = f->getPosition(), c = g_atCurrent->getPosition();
@@ -5406,6 +5687,11 @@ namespace
             atLoadScenario();
         if (!g_atActive || atOnLoadStep())
             return;
+        // No autosaves during a test: they'd overwrite the player's autosave
+        // slots (they did, 2026-11-23). The timer counts up in real seconds.
+        if (SaveManager* sm = SaveManager::getSingleton())
+            *reinterpret_cast<float*>(reinterpret_cast<char*>(sm) + 0x118) = 0.0f; // SaveManager::autoSaveTimer
+        atKeepSafe();
         if (g_atPc >= g_atLines.size())
         {
             atFinish("end of scenario");
