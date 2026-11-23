@@ -3177,7 +3177,13 @@ namespace
     {
         if (!b->isDestroyed())
         {
-            actionLog("[buildings] " + b->getName() + " isn't a ruin");
+            if (instantly) // re-finish: what fixes a repair that ended without its exterior
+            {
+                b->setConstructionProgress(1.0f);
+                actionLog("[buildings] re-finished " + b->getName() + ": " + describeRepairState(b));
+            }
+            else
+                actionLog("[buildings] " + b->getName() + " isn't a ruin");
             return;
         }
         b->setDestroyed(false);
@@ -3189,7 +3195,6 @@ namespace
             Building::ConstructionState* st = b->getBuildState_ActualNonShared();
             if (st)
             {
-                st->setup(b->data);
                 st->isComplete = false;
                 st->isDismantled = false;
                 st->isPaused = false;
@@ -3213,6 +3218,35 @@ namespace
         repairBuilding(b, instantly);
         g_bShown.clear();
         refreshBuildings();
+    }
+
+    // A repair builders finish reaches 100% but never swaps back to its
+    // finished exterior: the Longhouse came up with only its interior
+    // (2026-11-22), while finishing instantly (setConstructionProgress(1))
+    // rebuilt it properly. So a Hub building of ours at 100% that Kenshi
+    // hasn't marked complete is finished that same way. Vanilla construction
+    // sets the flag itself, so only our repairs should ever match.
+    std::set<Building*> g_refinished; // once each: if the flag still doesn't take, don't loop
+
+    void finishRepairsTick()
+    {
+        if (!g_hub || !hubIsOurs() || !ou || !ou->player)
+            return;
+        Faction* mine = ou->player->getFaction();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            Building* b = all[i];
+            if (b->getFaction() != mine || b->isDestroyed())
+                continue;
+            Building::ConstructionState* own = b->getBuildState_ActualNonShared();
+            if (!own || own->isComplete || own->constructionProgress < 0.999f || g_refinished.count(b))
+                continue;
+            g_refinished.insert(b);
+            b->setConstructionProgress(1.0f);
+            actionLog("[buildings] repair finished: " + b->getName() + ": " + describeRepairState(b));
+        }
     }
 
     // ---- Repair on Kenshi's own building panel, under Dismantle.
@@ -4310,6 +4344,7 @@ namespace
             contractTick();
             questTick();
             hookBuildingPanels();
+            finishRepairsTick();
             if (hubIsOurs())
             {
                 std::string merged = consolidateHub();
