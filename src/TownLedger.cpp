@@ -3856,7 +3856,8 @@ namespace
             toast(t.str());
             // Played by us, not Kenshi (whose sounds are hashed Wwise events):
             // made by scripts/assets/chime.py, installed with the mod.
-            PlaySoundA("mods\TownLedger\task_complete.wav", NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+            if (!PlaySoundA("mods\\TownLedger\\task_complete.wav", NULL, SND_FILENAME | SND_ASYNC | SND_NODEFAULT))
+                actionLog("[quest] couldn't play mods\\TownLedger\\task_complete.wav");
             g_questJustDone = c->quest;
             g_questDoneUntil = GetTickCount() + QUEST_DONE_SHOW_MS;
             ++c->quest;
