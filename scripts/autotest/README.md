@@ -40,6 +40,10 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `dump` | the Hub's building list (`hub_buildings.txt`) |
 | `repair <name>` | our Repair on the nearest ruin by that name; it becomes `current` |
 | `place <stringId> <dx> <dz>` | a construction site near the camera; it becomes `current` |
+| `place_near <stringId> <dx> <dz> [done]` | a site (or a finished building) beside the founder; becomes `current` |
+| `stock <count> <item name>` | items into the current building |
+| `job <task number> [name\|current]` | a standing job for the founder (125 = Engineer, 87 = operate machinery) |
+| `who` | what the founder is doing, his jobs, distance to `current` |
 | `construct <name\|current> [secs]` | does builders' work on it until complete (default 60 s) |
 | `set_task <n>` | jumps the guided start to task n |
 | `expect task <n>` | the guided start is on task n |

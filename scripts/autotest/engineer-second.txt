@@ -1,0 +1,18 @@
+# Does the Engineer job stand? After the first site is built, a second site
+# placed later should be built without giving the job again.
+load kt-test
+wait_ready
+place_near 2940-gamedata.base 80 0 done
+stock 30 Building Materials
+place_near 1509-gamedata.base 0 120
+job 125 current
+speed 3
+wait 30
+who
+expect complete current
+place_near 1509-gamedata.base -120 60
+who
+wait 40
+who
+expect complete current
+quit

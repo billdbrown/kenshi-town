@@ -25,7 +25,15 @@ This file is the loop's memory: update the status lines as you go, and commit it
    log what he does. Needs harness commands for running game time, giving a job, adding
    items to a building and reading a character's current task. Find the cause; fix it if
    it's ours.
-   - status: not started
+   - status: **done, not reproduced with a store** (2026-11-23). Scenarios `engineer-mine`,
+     `engineer-second`, `engineer-chest` and a no-job control:
+     - Engineer job (JOB_BUILDER, 125) + a complete, stocked Building Materials store: he
+       builds the mine, and a second mine placed later without being told again.
+     - No job: the mine stays at 0%.
+     - Materials only in a General Storage Chest: he never builds (wanders, "Aimless").
+     So Bill's first report (chest) is vanilla behaviour. His second (a stocked store, still
+     no building) doesn't reproduce here; see For Bill.
+     - `getPermajobCount` reads 0 for jobs given with `addJob` even while they work.
 2. **Arrivals.** Force an arrival, accept one and turn one away; check names, tags,
    stats within the intended range, squad placement, the toast and the HUD count.
    - status: not started
@@ -53,3 +61,10 @@ guards leaving), the selection lock, the ankh (construct it, use it, screenshot 
 ## For Bill
 
 (questions and choices that came up overnight)
+
+- **The founder and the mine.** With a finished, stocked Building Materials store and the
+  Engineer job he builds it every time here. When it failed for you: was the store itself
+  finished (not still a construction site)? Was the mine a site, or built but not being mined
+  (mining is a separate job)? Was he given Engineer by shift-clicking, and on what?
+- Idea, not built: an alert "builders can't find building materials" when a site needs
+  materials and no Building Materials store holds any (a general chest doesn't count).

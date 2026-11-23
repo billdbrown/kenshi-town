@@ -4704,6 +4704,12 @@ namespace
         return best;
     }
 
+    Character* atFounder()
+    {
+        const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
+        return people.size() > 0 ? people[0] : NULL;
+    }
+
     bool atComplete(Building* b)
     {
         Building::ConstructionState* own = b->getBuildState_ActualNonShared();
@@ -5065,6 +5071,97 @@ namespace
                                            false, 0, false);
             g_atCurrent = b;
             atWrite("INFO", "placed " + (b ? b->getName() + ": " + describeRepairState(b) : std::string("nothing")));
+            return true;
+        }
+        if (cmd == "place_near") // place_near <stringId> <dx> <dz> [done]: beside the founder
+        {
+            std::string sid, done;
+            float dx = 0, dz = 0;
+            std::istringstream(rest) >> sid >> dx >> dz >> done;
+            GameData* d = ou->gamedata.getData(sid);
+            Character* f = atFounder();
+            if (!d || !g_createBuilding || !f)
+            {
+                atCheck(false, "place_near " + sid + ": no such data, or no founder");
+                return true;
+            }
+            Ogre::Vector3 at = f->getPosition();
+            Ogre::Vector3 pos(at.x + dx, 0.0f, at.z + dz);
+            Building* b = g_createBuilding(ou->theFactory, d, pos, hubBase(), ou->player->getFaction(),
+                                           Ogre::Quaternion::IDENTITY, NULL, NULL, NULL, NULL, NULL, false,
+                                           done == "done", false, 0, false);
+            g_atCurrent = b;
+            std::ostringstream t;
+            t << "placed " << (b ? b->getName() + ": " + describeRepairState(b) : std::string("nothing"));
+            if (b)
+                t << "; in " << (b->getTown() == hubBase() ? "the base" : b->getTown() ? "another town part" : "NO town")
+                  << ", faction " << factionName(b->getFaction());
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "stock") // stock <count> <item name>: items into the current building
+        {
+            int count = 0;
+            std::istringstream in2(rest);
+            in2 >> count;
+            std::string item;
+            std::getline(in2, item);
+            size_t st = item.find_first_not_of(" \t");
+            item = st == std::string::npos ? "" : item.substr(st);
+            GameData* d = findItemData(item);
+            if (!g_atCurrent || !d || !g_createItem)
+            {
+                atCheck(false, "stock: no current building or no item '" + item + "'");
+                return true;
+            }
+            int given = 0;
+            RootObject* who = g_atCurrent;
+            for (int n = 0; n < count; ++n)
+            {
+                hand none;
+                Item* it = g_createItem(ou->theFactory, d, &none, NULL, NULL, -1, NULL);
+                if (!it || !who->giveItem(it, false, true))
+                    break;
+                ++given;
+            }
+            std::ostringstream t;
+            t << "stocked " << given << " x " << item << " into " << g_atCurrent->getName();
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "job") // job <task number> [name|current]: a standing job for the founder
+        {
+            int type = 0;
+            std::string name = "current";
+            std::istringstream(rest) >> type >> name;
+            Building* b = atFind(name, false);
+            Character* f = atFounder();
+            if (!f)
+            {
+                atCheck(false, "job: no founder");
+                return true;
+            }
+            f->addJob(TaskType(type), b, false, true, b ? b->getPosition() : f->getPosition());
+            atWrite("INFO", "job given; " + bareName(f) + " now has: " + describeJobs(f));
+            return true;
+        }
+        if (cmd == "who") // who: what the founder is doing and has been told to do
+        {
+            Character* f = atFounder();
+            if (!f)
+            {
+                atCheck(false, "who: no founder");
+                return true;
+            }
+            std::ostringstream t;
+            t << bareName(f) << ": doing '" << currentActivity(f) << "'; jobs: " << describeJobs(f);
+            if (g_atCurrent)
+            {
+                Ogre::Vector3 a = f->getPosition(), c = g_atCurrent->getPosition();
+                t << "; " << int(sqrt((a.x - c.x) * (a.x - c.x) + (a.z - c.z) * (a.z - c.z)) / 10.0f) << " m from "
+                  << g_atCurrent->getName() << " (" << describeRepairState(g_atCurrent) << ")";
+            }
+            atWrite("INFO", t.str());
             return true;
         }
         if (cmd == "construct") // construct <name|current> [seconds]: builders' work, sped up

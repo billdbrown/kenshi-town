@@ -1,0 +1,16 @@
+# Materials only in a General Storage Chest (the dev Supplies chest), no
+# Building Materials store: the Engineer does NOT build (found 2026-11-23).
+# Vanilla behaviour: builders draw from resource storage, not general storage.
+load kt-test
+wait_ready
+place_near 1459-gamedata.base 80 0 done
+stock 30 Building Materials
+place_near 1509-gamedata.base 0 120
+job 125 current
+speed 3
+wait 20
+who
+wait 30
+who
+expect incomplete current
+quit
