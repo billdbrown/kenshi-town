@@ -22,6 +22,7 @@
 #include <kenshi/Character.h>
 #include <kenshi/Faction.h>
 #include <kenshi/FactionWarMgr.h>
+#include <kenshi/FactionRelations.h>
 #include <kenshi/Town.h>
 #include <kenshi/SharedKing.h>
 #include <kenshi/ZoneManager.h>
@@ -5786,6 +5787,53 @@ namespace
                                        f->getFaction());
             }
             atWrite("INFO", raidsReport());
+            return true;
+        }
+        if (cmd == "relation") // relation [value]: how the Dust Bandits and we stand; set it both ways
+        {
+            Faction* them = ou->factionMgr->getFactionByName(RAID_FACTION);
+            Faction* us = ou->player->getFaction();
+            if (!them || !us || !them->relations || !us->relations)
+            {
+                atCheck(false, "relation: no factions");
+                return true;
+            }
+            std::ostringstream t;
+            if (!rest.empty())
+            {
+                float v = 0;
+                std::istringstream(rest) >> v;
+                them->relations->setRelation(us, v);
+                us->relations->setRelation(them, v);
+                t << "set to " << v << "; ";
+            }
+            t << "relation: " << RAID_FACTION << " to us " << them->relations->getFactionRelation(us) << " (enemy "
+              << (them->relations->isEnemy(us) ? "yes" : "no") << ", enemy by default "
+              << (them->relations->isEnemyByDefault() ? "yes" : "no") << "); us to them "
+              << us->relations->getFactionRelation(them) << " (enemy " << (us->relations->isEnemy(them) ? "yes" : "no")
+              << ")";
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "spawn_squad") // spawn_squad <metres east of the founder> [squad sid]: a roaming Dust Bandit squad
+        {
+            float metres = 150;
+            std::string sid = "1302-gamedata.base"; // Dust Bandit squad: patrols, assaults towns it passes
+            std::istringstream in(rest);
+            in >> metres >> sid;
+            Faction* them = ou->factionMgr->getFactionByName(RAID_FACTION);
+            GameData* squad = ou->gamedata.getData(sid);
+            Character* f = atFounder();
+            if (!them || !squad || !f || !ou->theFactory)
+            {
+                atCheck(false, "spawn_squad: missing the faction, the squad or the founder");
+                return true;
+            }
+            Ogre::Vector3 at = f->getPosition();
+            at.x += metres * 10.0f;
+            Platoon* made = ou->theFactory->createRandomSquad(them, at, NULL, 20, NULL, squad, NULL, NULL, NULL, false,
+                                                              hand(), NULL, 1.0f, SQ_ROAMING, false);
+            atWrite("INFO", std::string("spawn_squad '") + squad->name + "': " + (made ? "made" : "NOT made"));
             return true;
         }
         if (cmd == "safe") // safe on|off: remove anyone hostile to the founder within 300 m, as they come

@@ -1,0 +1,32 @@
+# Roaming Dust Bandits with the relation raised: do they leave the town alone, and turn when it's put back?
+load kt-test
+wait_ready
+relation 50
+speed 3
+spawn_squad 150
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+note relation put back
+relation -10
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+relation
+quit

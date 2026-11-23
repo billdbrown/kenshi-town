@@ -125,6 +125,14 @@ Yes for campaign raids; a second source of raiders isn't covered yet. Scenarios 
   the town on their own. That is probably what the day-one raids overnight were. In the
   observe run nobody came in 180 s, so it's chance.
 
+**Roaming squads and the relation** (scenarios `roamers-hostile`, `roamers-friendly`): the
+relation starts at -10 each way, which Kenshi doesn't count as "enemy", yet a squad spawned 150 m
+off attacked within 12 s and the founder went down. With the relation set to 50 first
+(`FactionRelations::setRelation`, both ways) 15 bandits stood about in town for a game hour and
+touched nobody; put back to -10 they attacked at once. Only 50 was tried. The campaign's own
+dialogue offers the same thing for money: 2,000 cats every 2 days and "no Dust Bandits will
+attack you".
+
 ## For Bill
 
 (questions and choices that came up overnight)

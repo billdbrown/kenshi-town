@@ -1,0 +1,23 @@
+# Roaming Dust Bandits, as they are: a squad spawned 150 m off; do they assault the town?
+load kt-test
+wait_ready
+relation
+speed 3
+spawn_squad 150
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+quit
