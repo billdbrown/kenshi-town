@@ -341,6 +341,27 @@ namespace
         return st ? st->constructionProgress : 1.0f;
     }
 
+    // At 100% but not marked complete: the Hub's inherited gates sit like
+    // this (construction 100%, "not complete", 14 materials needed), which is
+    // what sent an Engineer straight to them; so does a repair builders
+    // finish. Setting progress to 1 doesn't set the flag (2026-11-22).
+    bool stuckUnfinished(Building* b)
+    {
+        Building::ConstructionState* own = b->getBuildState_ActualNonShared();
+        return own && !own->isComplete && !b->isDestroyed() && own->constructionProgress >= 0.999f;
+    }
+
+    // Finish a building the way construction does: Kenshi's own completion
+    // call, then the flag if that didn't set it.
+    void finishBuilding(Building* b)
+    {
+        b->setConstructionProgress(1.0f);
+        b->notifyConstructionComplete();
+        Building::ConstructionState* own = b->getBuildState_ActualNonShared();
+        if (own && !own->isComplete)
+            own->isComplete = true;
+    }
+
     void setHubOwner(Faction* owner)
     {
         if (!g_hub || !owner)
@@ -2695,9 +2716,10 @@ namespace
         // (Before the removals, which may leave freed buildings listed.)
         std::map<std::string, int> finished;
         for (size_t i = 0; i < all.size(); ++i)
-            if (!names.count(all[i]->getName()) && !all[i]->isDestroyed() && buildProgress(all[i]) < 1.0f)
+            if (!names.count(all[i]->getName()) && !all[i]->isDestroyed() &&
+                (buildProgress(all[i]) < 1.0f || stuckUnfinished(all[i])))
             {
-                all[i]->setConstructionProgress(1.0f);
+                finishBuilding(all[i]);
                 ++finished[all[i]->getName()];
             }
         std::map<std::string, int> removed;
@@ -3179,7 +3201,7 @@ namespace
         {
             if (instantly) // re-finish: what fixes a repair that ended without its exterior
             {
-                b->setConstructionProgress(1.0f);
+                finishBuilding(b);
                 actionLog("[buildings] re-finished " + b->getName() + ": " + describeRepairState(b));
             }
             else
@@ -3240,11 +3262,10 @@ namespace
             Building* b = all[i];
             if (b->getFaction() != mine || b->isDestroyed())
                 continue;
-            Building::ConstructionState* own = b->getBuildState_ActualNonShared();
-            if (!own || own->isComplete || own->constructionProgress < 0.999f || g_refinished.count(b))
+            if (!stuckUnfinished(b) || g_refinished.count(b))
                 continue;
             g_refinished.insert(b);
-            b->setConstructionProgress(1.0f);
+            finishBuilding(b);
             actionLog("[buildings] repair finished: " + b->getName() + ": " + describeRepairState(b));
         }
     }
