@@ -2731,12 +2731,13 @@ namespace
     // from the world map, not the town record, so a data mod can't do this.
     const char* CLEANUP_FILE = "mods\\TownLedger\\hub_cleanup.txt";
 
-    // What goes (Bill, 2026-11-23): both kinds of Storm House, Residential
-    // Small and the broken street props. Every other house stays. (Removing
-    // houses briefly stopped because each left floating "debris"; that turned
-    // out to be squatter camp dressing, now cleared: see clearSquatterCamps.)
+    // What goes (Bill, 2026-11-23): both kinds of Storm House, the L-Houses,
+    // the Bughouse, the Small Shacks, Residential Small and the broken street
+    // props. The Longhouses, Snailhouse, Stationhouse and Watchtower stay.
+    // (Removing houses briefly stopped because each left floating "debris";
+    // that was squatter camp dressing, now cleared: see clearSquatterCamps.)
     const char* CLEANUP_DEFAULT[] = {
-        "Storm House", "Old Storm House", "Residential Small",
+        "Storm House", "Old Storm House", "L-House", "Bughouse", "Small Shack", "Residential Small",
         "Holy Sinner Torch Broken", "Holy Street Torch Broken", "Holy Street Torch Snapped",
         "Emperor Statue Broken", "Wind Generator Broken"};
     const size_t CLEANUP_DEFAULT_COUNT = sizeof(CLEANUP_DEFAULT) / sizeof(CLEANUP_DEFAULT[0]);
