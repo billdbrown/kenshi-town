@@ -34,6 +34,7 @@ OUT = os.path.join(AT_DIR, "out")
 REPORT = os.path.join(OUT, "report.txt")
 SAVES = os.path.join(os.environ.get("LOCALAPPDATA", ""), "kenshi", "save")
 PLUGIN_LOG = os.path.join(KENSHI, "RE_Kenshi_log.txt")
+STATE_FILES = ["contracts.txt", "profiles.txt", "hub_cleanup.txt"]
 
 
 def kenshi_running():
@@ -122,6 +123,16 @@ def main():
             raise SystemExit("build/install failed")
         print("built and installed")
 
+    # The plugin keeps per-save state (guided-start progress, garrison) in
+    # files next to it; a test that jumps tasks would otherwise leak into the
+    # save's record for the next run (2026-11-22: kt-test woke up on task 4).
+    state = {}
+    for f in STATE_FILES:
+        path = os.path.join(KENSHI, "mods", "TownLedger", f)
+        if os.path.isfile(path):
+            with open(path, "rb") as fh:
+                state[path] = fh.read()
+
     if os.path.isdir(OUT):
         shutil.rmtree(OUT)
     os.makedirs(OUT)
@@ -157,6 +168,9 @@ def main():
         for pid in kenshi_pids():
             subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
             print("ended Kenshi (pid %d)" % pid)
+        for path, data in state.items():
+            with open(path, "wb") as fh:
+                fh.write(data)
 
     report = read_report()
     dest = os.path.join(REPO, "build", "autotest", "%s-%s" % (name, datetime.datetime.now().strftime("%Y%m%d-%H%M%S")))

@@ -18,6 +18,9 @@ menu and Kenshi never fires Ogre frame listeners.
 completes anything of ours at 100%. So it proves "task waits for completion", not
 "builders fetch materials".
 
+The runner backs up and restores the plugin's state files (`contracts.txt` and co.), so a
+scenario that jumps tasks doesn't change the save's record for the next run.
+
 The test save is **`kt-test`**: a "Kenshi Town: The Hub" new game, saved right
 after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 
@@ -43,6 +46,8 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `expect complete\|incomplete <name\|current>` | Kenshi's own complete flag |
 | `expect exists\|missing <name>` | a Hub building by that name |
 | `expect none_stuck` | nothing of ours at 100% construction but not complete |
+| `scene` | every Ogre movable-object type: count, count near the Hub, samples (building parts are not Entities; only doors are) |
+| `wreckage [hide]` | orphaned `*_destroyed.mesh` entities in the Hub (finds none: see `scene`) |
 | `note <text>` | a line in the report |
 | `quit` | writes DONE and ends Kenshi (also at the end of the file) |
 

@@ -3207,6 +3207,11 @@ namespace
     // They aren't buildings, so nothing in the game can select or clear them.
     // Any *_destroyed.mesh entity in the Hub with no ruin left near it is
     // hidden. Visual only, so it's done again after every load.
+    //
+    // DOESN'T WORK YET (autotest "scene", 2026-11-22): building parts aren't
+    // Ogre Entities. Of ~830 entities only doors are (Storm_House_01_Door.mesh);
+    // walls, extras and wreckage are baked into combined geometry, so there is
+    // nothing here to hide. Kept for its report until a better route is found.
     std::string hideOrphanWreckage(bool hide)
     {
         Ogre::Root* root = Ogre::Root::getSingletonPtr();
@@ -4809,6 +4814,64 @@ namespace
                 return false;
             bool ok = atScreenshot(rest);
             atWrite(ok ? "SHOT" : "INFO", rest + ".png" + (ok ? "" : " failed"));
+            return true;
+        }
+        if (cmd == "scene") // scene: every movable-object type, how many, how many in the Hub, sample names
+        {
+            Ogre::Root* root = Ogre::Root::getSingletonPtr();
+            Ogre::Vector3 hub = g_hub ? g_hub->getPosition() : Ogre::Vector3::ZERO;
+            Ogre::Root::MovableObjectFactoryIterator fit = root->getMovableObjectFactoryIterator();
+            while (fit.hasMoreElements())
+            {
+                std::string type = fit.getNext()->getType();
+                int total = 0, inHub = 0, destroyed = 0;
+                std::set<std::string> samples;
+                Ogre::SceneManagerEnumerator::SceneManagerIterator managers = root->getSceneManagerIterator();
+                while (managers.hasMoreElements())
+                {
+                    Ogre::SceneManager* sm = managers.getNext();
+                    Ogre::SceneManager::MovableObjectIterator it = sm->getMovableObjectIterator(type);
+                    while (it.hasMoreElements())
+                    {
+                        Ogre::MovableObject* o = it.getNext();
+                        ++total;
+                        Ogre::SceneNode* node = o ? o->getParentSceneNode() : NULL;
+                        if (!node)
+                            continue;
+                        Ogre::Vector3 at = node->_getDerivedPosition();
+                        float dx = at.x - hub.x, dz = at.z - hub.z;
+                        if (dx * dx + dz * dz <= 1500.0f * 1500.0f)
+                            ++inHub;
+                        std::string label = o->getName();
+                        if (type == "Entity")
+                        {
+                            Ogre::Entity* e = static_cast<Ogre::Entity*>(o);
+                            if (!e->getMesh().isNull())
+                                label = e->getMesh()->getName();
+                        }
+                        if (lowerCase(label).find("destroyed") != std::string::npos)
+                        {
+                            ++destroyed;
+                            if (destroyed <= 3)
+                            {
+                                std::ostringstream q;
+                                q << "  " << label << " at " << int(at.x) << "," << int(at.y) << "," << int(at.z)
+                                  << " (Hub at " << int(hub.x) << "," << int(hub.z) << ")";
+                                atWrite("INFO", q.str());
+                            }
+                        }
+                        if (samples.size() < 12 && (lowerCase(label).find("storm") != std::string::npos ||
+                                                    lowerCase(label).find("destroyed") != std::string::npos))
+                            samples.insert(label);
+                    }
+                }
+                std::ostringstream t;
+                t << "scene type " << type << ": " << total << " total, " << inHub << " near the Hub, " << destroyed
+                  << " 'destroyed';";
+                for (std::set<std::string>::iterator n = samples.begin(); n != samples.end(); ++n)
+                    t << " " << *n << ";";
+                atWrite("INFO", t.str());
+            }
             return true;
         }
         if (cmd == "wreckage") // wreckage [hide]: report orphaned ruin meshes in the Hub
