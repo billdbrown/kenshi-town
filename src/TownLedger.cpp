@@ -2731,13 +2731,14 @@ namespace
     // from the world map, not the town record, so a data mod can't do this.
     const char* CLEANUP_FILE = "mods\\TownLedger\\hub_cleanup.txt";
 
-    // Bill's choice (2026-11-22): keep the Longhouses, the Stationhouse and the
-    // Snailhouse; lose every other house and the broken street props. Except
-    // the Storm Houses (2026-11-23): removing or repairing one leaves its
-    // broken-building debris behind (probably Havok fragments; nothing found
-    // yet can clear it), so they stay as ruins, the one by the bar included.
+    // Bill's first choice (2026-11-22) removed every house but the Longhouses,
+    // Stationhouse and Snailhouse. But every house in the Hub is a Storm House
+    // variant with a broken form, and removing one leaves its broken-building
+    // debris floating (probably Havok fragments; nothing tried clears it). So
+    // since 2026-11-23 no house is removed: only Residential Small (no broken
+    // form) and the broken street props.
     const char* CLEANUP_DEFAULT[] = {
-        "Small Shack", "Bughouse", "L-House", "Residential Small",
+        "Residential Small",
         "Holy Sinner Torch Broken", "Holy Street Torch Broken", "Holy Street Torch Snapped",
         "Emperor Statue Broken", "Wind Generator Broken"};
     const size_t CLEANUP_DEFAULT_COUNT = sizeof(CLEANUP_DEFAULT) / sizeof(CLEANUP_DEFAULT[0]);
