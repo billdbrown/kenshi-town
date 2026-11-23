@@ -1282,6 +1282,30 @@ namespace
         }
     }
 
+    // Hub buildings with function `fn`, and the furniture with it inside
+    // every Hub building: interior furniture (a research bench, an indoor
+    // bed) isn't in the town's building list, so the bench task never saw
+    // the bench (2026-11-22).
+    void hubWithFunction(BuildingFunction fn, std::vector<Building*>& out)
+    {
+        out.clear();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        std::set<Building*> seen;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            if (all[i]->getSpecialFunction() == fn && seen.insert(all[i]).second)
+                out.push_back(all[i]);
+            if (all[i]->isDestroyed() || !all[i]->hasInterior())
+                continue;
+            lektor<Building*> inside;
+            all[i]->findAllFurnitureWithFunction(inside, fn);
+            for (uint32_t k = 0; k < inside.size(); ++k)
+                if (inside[k] && seen.insert(inside[k]).second)
+                    out.push_back(inside[k]);
+        }
+    }
+
     // Who owned each building before we claimed it, so Give back can undo it.
     std::map<Building*, Faction*> g_originalOwners;
 
@@ -3677,7 +3701,7 @@ namespace
 
     // A building of ours in the Hub whose name contains `nameContains`:
     // finished, under construction (the bar follows it) or not started.
-    bool qBuilt(const char* nameContains, QuestProgress& p)
+    bool qBuiltFrom(const std::vector<Building*>& all, const char* nameContains, QuestProgress& p)
     {
         p.have = 0;
         p.need = 1;
@@ -3685,8 +3709,6 @@ namespace
         if (!ou || !ou->player)
             return false;
         Faction* mine = ou->player->getFaction();
-        std::vector<Building*> all;
-        hubBuildings(all);
         float best = -1.0f;
         for (size_t i = 0; i < all.size(); ++i)
             if (all[i]->getFaction() == mine && !all[i]->isDestroyed() &&
@@ -3766,7 +3788,16 @@ namespace
 
     bool qResearchBench(QuestProgress& p)
     {
-        return qBuilt("Research Bench", p);
+        std::vector<Building*> benches;
+        hubWithFunction(BF_RESEARCH, benches);
+        return qBuiltFrom(benches, "", p); // any research bench, indoors or out
+    }
+
+    bool qBuilt(const char* nameContains, QuestProgress& p)
+    {
+        std::vector<Building*> all;
+        hubBuildings(all);
+        return qBuiltFrom(all, nameContains, p);
     }
 
     bool qMaterialStorage(QuestProgress& p)
@@ -3812,10 +3843,10 @@ namespace
             return false;
         Faction* mine = ou->player->getFaction();
         std::vector<Building*> all;
-        hubBuildings(all);
+        hubWithFunction(BF_BED, all);
         int beds = 0;
         for (size_t i = 0; i < all.size(); ++i)
-            if (all[i]->getFaction() == mine && all[i]->getSpecialFunction() == BF_BED && buildProgress(all[i]) >= 1.0f)
+            if (all[i]->getFaction() == mine && buildProgress(all[i]) >= 1.0f)
                 ++beds;
         int people = int(ou->player->getAllPlayerCharacters().size());
         p.need = people > 0 ? people : 1;
@@ -4058,11 +4089,15 @@ namespace
             if (b->getFaction() != mine || b->isDestroyed())
                 continue;
             BuildingFunction f = b->getSpecialFunction();
-            if (f == BF_BED)
-                ++beds;
             if (f != BF_BED && buildingIsFull(b))
                 full[b->getName()].push_back(b);
         }
+
+        std::vector<Building*> bedList; // indoor beds too
+        hubWithFunction(BF_BED, bedList);
+        for (size_t i = 0; i < bedList.size(); ++i)
+            if (bedList[i]->getFaction() == mine && !bedList[i]->isDestroyed())
+                ++beds;
 
         // People: idle, no job.
         const lektor<Character*>& people = ou->player->getAllPlayerCharacters();
