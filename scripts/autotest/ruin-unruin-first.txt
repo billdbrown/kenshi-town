@@ -1,0 +1,15 @@
+# The same Storm House (A) and framing as ruin-removal.txt, but un-ruined (the
+# instant repair) before it's removed. Compare c-2 with ruin-removal's a-1.
+load kt-test
+wait_ready
+camera_on Storm House
+wait 1.5
+camera_hold
+screenshot c-0-ruin
+unruin current
+wait 4
+screenshot c-1-unruined
+remove current
+wait 4
+screenshot c-2-removed-after-unruin
+quit

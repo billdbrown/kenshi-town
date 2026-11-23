@@ -1316,6 +1316,24 @@ namespace
         }
     }
 
+    // Everything furnished inside a building, of every function: beds, benches
+    // and the decorative scrap ("fluff") its floor is dressed with.
+    void allFurniture(Building* b, std::vector<Building*>& out)
+    {
+        out.clear();
+        if (!b || !b->hasInterior())
+            return;
+        std::set<Building*> seen;
+        for (int fn = BF_ANY; fn <= BF_LIQUID_TANK; ++fn)
+        {
+            lektor<Building*> found;
+            b->findAllFurnitureWithFunction(found, BuildingFunction(fn));
+            for (uint32_t k = 0; k < found.size(); ++k)
+                if (found[k] && found[k] != b && seen.insert(found[k]).second)
+                    out.push_back(found[k]);
+        }
+    }
+
     // Who owned each building before we claimed it, so Give back can undo it.
     std::map<Building*, Faction*> g_originalOwners;
 
@@ -4800,11 +4818,50 @@ namespace
             atWrite("INFO", cmd + " " + b->getName() + ": " + describeRepairState(b));
             return true;
         }
+        if (cmd == "center") // center <name|current>: camera centre on its position, following nothing
+        {
+            Building* b = atFind(rest, false);
+            if (!b)
+            {
+                atCheck(false, "center " + rest + ": no such building");
+                return true;
+            }
+            g_atCurrent = b;
+            CameraClass* cam = ou->player->getCamera();
+            if (cam)
+                cam->objectCurrentlyFollowing = hand();
+            ou->player->focusCamera(b->getPosition());
+            return true;
+        }
+        if (cmd == "camera_hold") // stop following whatever camera_on focused, so the view stays put
+        {
+            CameraClass* cam = ou->player->getCamera();
+            if (cam)
+                cam->objectCurrentlyFollowing = hand();
+            return true;
+        }
         if (cmd == "view") // view <yaw> <pitch> <zoom>
         {
             float yaw = 30, pitch = -35, zoom = 450;
             std::istringstream(rest) >> yaw >> pitch >> zoom;
             atView(yaw, pitch, zoom);
+            return true;
+        }
+        if (cmd == "orbit") // orbit <yaw> <pitch> <dist>: centre node turned, camera node pulled back
+        {
+            float yaw = 30, pitch = -35, dist = 300;
+            std::istringstream(rest) >> yaw >> pitch >> dist;
+            CameraClass* cam = ou->player->getCamera();
+            if (cam && cam->center && cam->node)
+            {
+                cam->center->setOrientation(Ogre::Quaternion(Ogre::Degree(yaw), Ogre::Vector3::UNIT_Y) *
+                                            Ogre::Quaternion(Ogre::Degree(pitch), Ogre::Vector3::UNIT_X));
+                cam->node->setPosition(0.0f, 0.0f, dist);
+                std::ostringstream t;
+                t << "orbit: camera node parent " << (cam->node->getParent() == cam->center ? "is" : "is NOT")
+                  << " the centre; yaw/pitch fields " << cam->yaw << "/" << cam->pitch << ", altitude " << cam->altitude;
+                atWrite("INFO", t.str());
+            }
             return true;
         }
         if (cmd == "screenshot")
@@ -4897,6 +4954,75 @@ namespace
             g_atCurrent = b;
             repairBuilding(b, false);
             atWrite("INFO", "repair ordered: " + describeRepairState(b));
+            return true;
+        }
+        if (cmd == "unruin") // unruin <name|current>: the instant repair (un-ruin at 100%)
+        {
+            Building* b = rest == "current" ? atFind(rest, false) : atFind(rest, true);
+            if (!b)
+            {
+                atCheck(false, "unruin " + rest + ": no such ruin");
+                return true;
+            }
+            g_atCurrent = b;
+            b->setDestroyed(false);
+            finishBuilding(b);
+            atWrite("INFO", "unruined " + b->getName() + ": " + describeRepairState(b));
+            return true;
+        }
+        if (cmd == "furniture") // furniture <name|current>: what's furnished inside it
+        {
+            Building* b = atFind(rest, false);
+            if (!b)
+            {
+                atCheck(false, "furniture " + rest + ": no such building");
+                return true;
+            }
+            g_atCurrent = b;
+            std::vector<Building*> f;
+            allFurniture(b, f);
+            std::map<std::string, int> names;
+            for (size_t i = 0; i < f.size(); ++i)
+                ++names[f[i]->getName()];
+            std::ostringstream t;
+            t << "furniture in " << b->getName() << ": " << f.size();
+            for (std::map<std::string, int>::iterator n = names.begin(); n != names.end(); ++n)
+                t << (n == names.begin() ? ": " : ", ") << n->second << " x " << n->first;
+            atWrite("INFO", t.str());
+            return true;
+        }
+        if (cmd == "remove_all") // remove_all <name|current>: its furniture first, then it
+        {
+            Building* b = atFind(rest, false);
+            if (!b)
+            {
+                atCheck(false, "remove_all " + rest + ": no such building");
+                return true;
+            }
+            std::vector<Building*> f;
+            allFurniture(b, f);
+            for (size_t i = 0; i < f.size(); ++i)
+                ou->dynamicDestroyBuilding(hand(f[i]));
+            std::ostringstream t;
+            t << "removing " << b->getName() << " and " << f.size() << " furniture";
+            atWrite("INFO", t.str());
+            if (b == g_atCurrent)
+                g_atCurrent = NULL;
+            ou->dynamicDestroyBuilding(hand(b));
+            return true;
+        }
+        if (cmd == "remove") // remove <name|current>: gone, the way the clean-up removes things
+        {
+            Building* b = atFind(rest, false);
+            if (!b)
+            {
+                atCheck(false, "remove " + rest + ": no such building");
+                return true;
+            }
+            atWrite("INFO", "removing " + b->getName() + ": " + describeRepairState(b));
+            if (b == g_atCurrent)
+                g_atCurrent = NULL;
+            ou->dynamicDestroyBuilding(hand(b));
             return true;
         }
         if (cmd == "place") // place <stringId> <dx> <dz>: a construction site near the camera

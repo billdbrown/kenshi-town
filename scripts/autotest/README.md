@@ -48,6 +48,13 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `expect none_stuck` | nothing of ours at 100% construction but not complete |
 | `scene` | every Ogre movable-object type: count, count near the Hub, samples (building parts are not Entities; only doors are) |
 | `wreckage [hide]` | orphaned `*_destroyed.mesh` entities in the Hub (finds none: see `scene`) |
+| `center <name\|current>` | camera centre on its position (lands somewhere odd: world and camera coordinates differ) |
+| `camera_hold` | stop following what `camera_on` focused; `camera_on X` + `wait 1.5` + `camera_hold` frames X best, though not identically run to run |
+| `orbit <yaw> <pitch> <dist>` | experimental: turns the camera's centre node, pulls its node back |
+| `unruin <name\|current>` | the instant repair: un-ruin at 100% |
+| `remove <name\|current>` | `dynamicDestroyBuilding`, as the clean-up does |
+| `furniture <name\|current>` | what's furnished inside it, every function |
+| `remove_all <name\|current>` | its furniture, then it |
 | `note <text>` | a line in the report |
 | `quit` | writes DONE and ends Kenshi (also at the end of the file) |
 

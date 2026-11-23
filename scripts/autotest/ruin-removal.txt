@@ -1,0 +1,24 @@
+# Does removing a ruin leave its wreckage floating, and does un-ruining it
+# first avoid that? kt-test has two ruined Storm Houses: A is removed as a
+# ruin, B is un-ruined (the instant repair) and then removed. Kenshi's own
+# focus, frozen 1.5 s in (where it frames the house), for each pair of shots.
+load kt-test
+wait_ready
+camera_on Storm House
+wait 1.5
+camera_hold
+screenshot a-0-ruin
+remove current
+wait 4
+screenshot a-1-removed-as-ruin
+camera_on Storm House
+wait 1.5
+camera_hold
+screenshot b-0-ruin
+unruin current
+wait 4
+screenshot b-1-unruined
+remove current
+wait 4
+screenshot b-2-removed-after-unruin
+quit

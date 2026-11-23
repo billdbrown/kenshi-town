@@ -1,0 +1,14 @@
+# Storm House A again, same framing: list its furniture, then remove the
+# furniture with the house. Compare d-1 with ruin-removal's a-1 (floating
+# pipes and sheeting at floor height).
+load kt-test
+wait_ready
+camera_on Storm House
+wait 1.5
+camera_hold
+furniture current
+screenshot d-0-ruin
+remove_all current
+wait 4
+screenshot d-1-removed-with-furniture
+quit
