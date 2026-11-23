@@ -3148,10 +3148,45 @@ namespace
             ou->player->focusCamera(b->getPosition());
     }
 
+    // Every Hub building, nearest the camera first, to mods/TownLedger/
+    // hub_buildings.txt: names for things the clean-up should know about
+    // (the props a dismantled storm house left floating, 2026-11-22).
+    void dumpHubBuildings()
+    {
+        if (!ou || !ou->player || !g_hub)
+            return;
+        Ogre::Vector3 eye = ou->player->getCameraCenter();
+        std::vector<Building*> all;
+        hubBuildings(all);
+        std::vector<std::pair<float, Building*> > order;
+        for (size_t i = 0; i < all.size(); ++i)
+        {
+            Ogre::Vector3 p = all[i]->getPosition();
+            float dx = p.x - eye.x, dz = p.z - eye.z;
+            order.push_back(std::make_pair(sqrt(dx * dx + dz * dz), all[i]));
+        }
+        std::sort(order.begin(), order.end());
+        FILE* f = fopen("mods\\TownLedger\\hub_buildings.txt", "w");
+        if (!f)
+            return;
+        fprintf(f, "# metres from camera<TAB>name<TAB>state<TAB>part<TAB>x<TAB>y<TAB>z\n");
+        for (size_t i = 0; i < order.size(); ++i)
+        {
+            Building* b = order[i].second;
+            Ogre::Vector3 p = b->getPosition();
+            fprintf(f, "%d\t%s\t%s\t%s\t%.0f\t%.0f\t%.0f\n", int(order[i].first / 10.0f), b->getName().c_str(),
+                    b->isDestroyed() ? "ruin" : (buildProgress(b) < 1.0f ? "unfinished" : "standing"),
+                    b->getTown() == hubBase() ? "base" : "old Hub", p.x, p.y, p.z);
+        }
+        fclose(f);
+        actionLog("[buildings] wrote mods\\TownLedger\\hub_buildings.txt");
+    }
+
     void onBuildingsNearCamera(MyGUI::WidgetPtr)
     {
         g_bShown.clear();
         refreshBuildings();
+        dumpHubBuildings();
     }
 
     void onBuildingsRuinsToggle(MyGUI::WidgetPtr)
