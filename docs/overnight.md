@@ -133,6 +133,15 @@ touched nobody; put back to -10 they attacked at once. Only 50 was tried. The ca
 dialogue offers the same thing for money: 2,000 cats every 2 days and "no Dust Bandits will
 attack you".
 
+**Built: the bandit grace period** (Bill, 2026-11-23: ends at the guard task, tell the player).
+While the guided start is unfinished the Dust Bandits' relation is held at 50 both ways and any
+queued raid on us is pushed 2 h on. When the last task (a guard) is done, the relation goes back
+to the faction's "default relation" (-10), but only once no Dust Bandits are within 1.5 x the
+Hub's radius. A tracker line says so while it lasts; toasts at the start and the end. Scenarios
+`grace-holds` (squad peaceful, raid pushed back 3 times, grace waits while 15 bandits are in
+town) and `grace-ends` (back to -10, a squad attacks at once). Saves already past the guided
+start are untouched.
+
 ## For Bill
 
 (questions and choices that came up overnight)

@@ -1,0 +1,39 @@
+# Bandit grace period: on from the start of the guided start; roaming squads and raids leave the Hub alone.
+# Then the guard task is done while bandits are in town: the grace waits for them to go.
+load kt-test
+wait_ready
+wait 3
+grace
+relation
+screenshot tracker
+speed 3
+spawn_squad 150
+raids force 0.3 0.4
+wait 15
+nearby 250
+raids
+wait 15
+nearby 250
+raids
+wait 15
+nearby 250
+raids
+wait 15
+nearby 250
+raids
+wait 15
+nearby 250
+raids
+wait 15
+nearby 250
+raids
+wait 15
+nearby 250
+raids
+grace
+note guard task done, bandits still about
+set_task 11
+wait 10
+grace
+nearby 250
+quit

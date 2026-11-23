@@ -2611,6 +2611,8 @@ namespace
         bool cleaned;     // the first-claim Hub clean-up has run in this save
         int warned;       // smallest warning threshold given (48, 24, 0), NO_WARNING if none
         int quest;        // the guided-start task in progress (index into QUESTS)
+        bool graced;      // the bandit grace period has raised the Dust Bandits' relation
+        float relBefore;  // their relation to us before it did, put back when it ends
     };
     std::map<std::string, Contract> g_contracts;
     bool g_contractsLoaded = false;
@@ -2627,11 +2629,13 @@ namespace
         FILE* f = fopen(CONTRACTS_FILE, "w");
         if (!f)
             return;
-        fprintf(f, "# Kenshi Town per-save state: save<TAB>start hour<TAB>paid until hour<TAB>gone<TAB>cleaned<TAB>quest\n");
+        fprintf(f, "# Kenshi Town per-save state: save<TAB>start hour<TAB>paid until hour<TAB>gone<TAB>cleaned<TAB>quest"
+                   "<TAB>graced<TAB>relation before\n");
         for (std::map<std::string, Contract>::iterator it = g_contracts.begin(); it != g_contracts.end(); ++it)
             if (it->first != "(unsaved)")
-                fprintf(f, "%s\t%f\t%f\t%d\t%d\t%d\n", it->first.c_str(), it->second.start, it->second.paidUntil,
-                        it->second.gone ? 1 : 0, it->second.cleaned ? 1 : 0, it->second.quest);
+                fprintf(f, "%s\t%f\t%f\t%d\t%d\t%d\t%d\t%f\n", it->first.c_str(), it->second.start,
+                        it->second.paidUntil, it->second.gone ? 1 : 0, it->second.cleaned ? 1 : 0, it->second.quest,
+                        it->second.graced ? 1 : 0, it->second.relBefore);
         fclose(f);
     }
 
@@ -2648,11 +2652,15 @@ namespace
                 continue;
             char name[256];
             double start = 0, paid = 0;
-            int gone = 0, cleaned = 1, quest = 0; // older lines: clean-up counts as done
-            if (sscanf(line, "%255[^\t]\t%lf\t%lf\t%d\t%d\t%d", name, &start, &paid, &gone, &cleaned, &quest) >= 4)
+            int gone = 0, cleaned = 1, quest = 0, graced = 0; // older lines: clean-up counts as done
+            float relBefore = 0;
+            if (sscanf(line, "%255[^\t]\t%lf\t%lf\t%d\t%d\t%d\t%d\t%f", name, &start, &paid, &gone, &cleaned, &quest,
+                       &graced, &relBefore) >= 4)
             {
                 Contract c = {start, paid, gone != 0, cleaned != 0, NO_WARNING};
                 c.quest = quest;
+                c.graced = graced != 0;
+                c.relBefore = relBefore;
                 if (std::string(name) != "(unsaved)")
                     g_contracts[name] = c;
             }
@@ -4496,6 +4504,8 @@ namespace
     MyGUI::TextBox* g_trkHint = NULL;
     MyGUI::TextBox* g_trkCount = NULL;
     MyGUI::TextBox* g_trkFoot = NULL;
+    MyGUI::TextBox* g_trkGrace = NULL;
+    bool graceActive();
     MyGUI::ProgressBar* g_trkBar = NULL;
     MyGUI::Button* g_trkFold = NULL;
 
@@ -4541,12 +4551,13 @@ namespace
             g_trkBar->setNeedMouseFocus(false);
             g_trkCount = trackerText("Kenshi_TextboxStandardText_Small", "KenshiTownTrkCount");
             g_trkFoot = trackerText("Kenshi_TextboxStandardText_Small", "KenshiTownTrkFoot");
+            g_trkGrace = trackerText("Kenshi_TextboxStandardText_Small", "KenshiTownTrkGrace");
             g_trkFold = gui->createWidgetReal<MyGUI::Button>("Kenshi_Button1", 0.6f, 0.1f, 0.02f, 0.02f,
                                                              MyGUI::Align::Default, "Main", "KenshiTownTrkFold");
             g_trkFold->eventMouseButtonClick += MyGUI::newDelegate(onTrackerFold);
         }
         MyGUI::Widget* all[] = {g_trkPanel, g_trkHeader, g_trkTitle, g_trkHint, g_trkBar,
-                                g_trkCount, g_trkFoot, g_trkFold};
+                                g_trkCount, g_trkFoot, g_trkFold, g_trkGrace};
         for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); ++i)
             all[i]->setVisible(false);
         g_columnY = COL_TOP;
@@ -4632,6 +4643,13 @@ namespace
                 g_trkFoot->setTextColour(justDone ? green : dim);
                 place(g_trkFoot, x + pad, y, inner, 0.02f);
                 y += 0.022f;
+                if (graceActive())
+                {
+                    g_trkGrace->setCaption("Dust Bandits leave you alone until you have a guard.");
+                    g_trkGrace->setTextColour(MyGUI::Colour(0.85f, 0.78f, 0.6f));
+                    place(g_trkGrace, x + pad, y, inner, 0.02f);
+                    y += 0.022f;
+                }
             }
         }
         y += pad;
@@ -4977,6 +4995,139 @@ namespace
         t << "; so far queued " << g_raidQueued << ", started " << g_raidStarted << ", refused " << g_raidRefused
           << ", pushed back " << g_raidPushed;
         return t.str();
+    }
+
+    // ==== Bandit grace period ==================================================
+    //
+    // A founder with 1 in every stat can't answer fifteen Dust Bandits, so
+    // until the guided start's last task (a guard of your own) is done they
+    // leave the Hub alone (Bill, 2026-11-23). Two sources, both tested with
+    // the harness: roaming squads, which obey the faction relation (at 50 a
+    // squad stood about in town and touched nobody; at the default -10 it
+    // attacked at once), and the faction's raid campaign, whose queued start
+    // can be pushed back. When the grace ends the relation goes back to what
+    // it was, but only once no Dust Bandits are in or near the Hub, so a
+    // squad loitering in town doesn't turn on everyone at once.
+
+    const float GRACE_RELATION = 50.0f;
+    const double GRACE_HOLD_HOURS = 2.0;    // how far a queued raid is pushed while held
+    const float GRACE_CLEAR_RADIUS = 1.5f;  // times the Hub's radius that must be bandit-free to end it
+    bool g_graceToldThisWorld = false;
+    TownBase* g_graceHub = NULL;
+
+    bool graceWanted(Contract* c)
+    {
+        return c && c->quest < QUEST_COUNT;
+    }
+
+    bool graceActive()
+    {
+        Contract* c = (g_hub && hubIsOurs()) ? currentContract() : NULL;
+        return c && (graceWanted(c) || c->graced);
+    }
+
+    int banditsNearHub(Faction* them)
+    {
+        if (!them || !g_hub)
+            return 0;
+        lektor<RootObject*> found;
+        them->getCharactersInArea(found, g_hub->getPosition(), g_hubRadius * GRACE_CLEAR_RADIUS, false);
+        int n = 0;
+        for (uint32_t i = 0; i < found.size(); ++i)
+        {
+            Character* ch = static_cast<Character*>(found[i]);
+            if (ch && !ch->isDead())
+                ++n;
+        }
+        return n;
+    }
+
+    // Kenshi's own starting relation for the faction ("default relation" in its
+    // data; -10 for the Dust Bandits).
+    float banditDefaultRelation(Faction* them)
+    {
+        GameData* d = them ? them->data : NULL;
+        if (d)
+        {
+            boost::unordered_map<std::string, int>::const_iterator i = d->idata.find("default relation");
+            if (i != d->idata.end())
+                return float(i->second);
+        }
+        return -10.0f;
+    }
+
+    void graceTick()
+    {
+        if (!ou || !ou->player || !ou->factionMgr || !g_hub || !hubIsOurs())
+            return;
+        if (g_hub != g_graceHub) // a different world loaded
+        {
+            g_graceHub = g_hub;
+            g_graceToldThisWorld = false;
+        }
+        Contract* c = currentContract();
+        Faction* them = ou->factionMgr->getFactionByName(RAID_FACTION);
+        Faction* us = ou->player->getFaction();
+        if (!c || !them || !us || !them->relations || !us->relations)
+            return;
+
+        if (graceWanted(c))
+        {
+            if (!c->graced)
+            {
+                // What to put back afterwards. Not trusted if it's already our
+                // own 50: a load can briefly run against another save's record
+                // (SaveManager's "current game"), raise the relation there, and
+                // leave this record to read our raise back as the "before".
+                float now = them->relations->getFactionRelation(us);
+                c->relBefore = now < GRACE_RELATION ? now : banditDefaultRelation(them);
+                c->graced = true;
+                persistContract();
+                std::ostringstream note;
+                note << "[bandits] grace period: Dust Bandits leave the Hub alone until you have a guard (relation was "
+                     << c->relBefore << ")";
+                actionLog(note.str());
+            }
+            if (them->relations->getFactionRelation(us) < GRACE_RELATION)
+                them->relations->setRelation(us, GRACE_RELATION);
+            if (us->relations->getFactionRelation(them) < GRACE_RELATION)
+                us->relations->setRelation(them, GRACE_RELATION);
+            if (g_raidMode == 0) // the harness's own raid modes win while a test sets one
+            {
+                FactionWarMgr* w = them->warMgr;
+                double now = ou->getTimeStamp_inGameHours().time;
+                for (uint32_t i = 0; w && i < w->campaignRequests.size(); ++i)
+                {
+                    FactionWarMgr::CampaignRequest* r = w->campaignRequests[i];
+                    if (r && r->timeToStart.time < now + 1.0)
+                    {
+                        r->timeToStart.time = now + GRACE_HOLD_HOURS;
+                        ++g_raidPushed;
+                    }
+                }
+            }
+            if (!g_graceToldThisWorld && g_questWarm >= 3)
+            {
+                g_graceToldThisWorld = true;
+                toast("The Dust Bandits are leaving you alone, for now.");
+            }
+            return;
+        }
+
+        // The guard is ready: end it, once no bandits are about.
+        if (!c->graced)
+            return;
+        int nearby = banditsNearHub(them);
+        if (nearby > 0)
+            return;
+        them->relations->setRelation(us, c->relBefore);
+        us->relations->setRelation(them, c->relBefore);
+        c->graced = false;
+        persistContract();
+        std::ostringstream note;
+        note << "[bandits] grace period over: relation back to " << c->relBefore;
+        actionLog(note.str());
+        toast("The Dust Bandits' patience has run out. Expect visitors.");
     }
 
     // ==== Autotest ==============================================================
@@ -5815,6 +5966,22 @@ namespace
             atWrite("INFO", t.str());
             return true;
         }
+        if (cmd == "grace") // grace: the bandit grace period's state
+        {
+            Contract* c = currentContract();
+            Faction* them = ou->factionMgr->getFactionByName(RAID_FACTION);
+            Faction* us = ou->player->getFaction();
+            std::ostringstream t;
+            t << "grace: " << (c && graceWanted(c) ? "wanted" : "not wanted") << ", "
+              << (c && c->graced ? "raised" : "not raised");
+            if (c && c->graced)
+                t << " (was " << c->relBefore << ")";
+            if (them && us && them->relations)
+                t << "; relation now " << them->relations->getFactionRelation(us) << "; bandits near the Hub "
+                  << banditsNearHub(them) << "; raids pushed back " << g_raidPushed;
+            atWrite("INFO", t.str());
+            return true;
+        }
         if (cmd == "spawn_squad") // spawn_squad <metres east of the founder> [squad sid]: a roaming Dust Bandit squad
         {
             float metres = 150;
@@ -6253,6 +6420,7 @@ namespace
             deedTick();
             contractTick();
             questTick();
+            graceTick();
             squatterCampsTick();
             hookBuildingPanels();
             finishRepairsTick();

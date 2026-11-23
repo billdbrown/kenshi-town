@@ -56,6 +56,7 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `expect gate_modest` / `expect gate_outside` | arrivals' stats in range; last listed arrival outside the walls |
 | `safe on\|off` | remove anyone hostile to the founder within 300 m as they come (raids kill a test) |
 | `relation [value]` | how the Dust Bandits and the player stand; with a value, set it both ways |
+| `grace` | the bandit grace period: wanted, raised (and the relation it will put back), bandits near the Hub |
 | `spawn_squad <metres> [squad sid]` | a roaming Dust Bandit squad that far east of the founder |
 | `raids [off\|hold <h>\|refuse\|noqueue\|force <min h> <max h>]` | report the Dust Bandits' raid queue; hold queued raids back, refuse them at the start, or force one onto the Hub |
 | `nearby [metres]` | who is around the founder, by faction, hostility and activity |

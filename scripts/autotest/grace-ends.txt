@@ -1,0 +1,20 @@
+# Bandit grace period ends: the guard task done with no bandits about puts the relation back, and a squad attacks again.
+load kt-test
+wait_ready
+wait 3
+grace
+note guard task done
+set_task 11
+wait 5
+grace
+relation
+screenshot ended
+speed 3
+spawn_squad 150
+wait 12
+nearby 250
+wait 12
+nearby 250
+wait 12
+nearby 250
+quit
