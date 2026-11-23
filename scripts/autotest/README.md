@@ -54,6 +54,7 @@ after the Hub was claimed. Nothing is saved during a run, so it stays as it is.
 | `remove <name\|current>` | `dynamicDestroyBuilding`, as the clean-up does |
 | `furniture <name\|current>` | what's furnished inside it, every function |
 | `remove_all <name\|current>` | its furniture, then it |
+| `cleanup` | the first-claim Hub clean-up, run now (uses the installed `hub_cleanup.txt`) |
 | `clear_camps` | the squatter-camp clean-up the plugin runs after a load (debris batch + camp furniture in ruins) |
 | `note <text>` | a line in the report |
 | `quit` | writes DONE and ends Kenshi (also at the end of the file) |

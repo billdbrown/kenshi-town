@@ -2731,14 +2731,12 @@ namespace
     // from the world map, not the town record, so a data mod can't do this.
     const char* CLEANUP_FILE = "mods\\TownLedger\\hub_cleanup.txt";
 
-    // Bill's first choice (2026-11-22) removed every house but the Longhouses,
-    // Stationhouse and Snailhouse. But every house in the Hub is a Storm House
-    // variant with a broken form, and removing one leaves its broken-building
-    // debris floating (probably Havok fragments; nothing tried clears it). So
-    // since 2026-11-23 no house is removed: only Residential Small (no broken
-    // form) and the broken street props.
+    // What goes (Bill, 2026-11-23): both kinds of Storm House, Residential
+    // Small and the broken street props. Every other house stays. (Removing
+    // houses briefly stopped because each left floating "debris"; that turned
+    // out to be squatter camp dressing, now cleared: see clearSquatterCamps.)
     const char* CLEANUP_DEFAULT[] = {
-        "Residential Small",
+        "Storm House", "Old Storm House", "Residential Small",
         "Holy Sinner Torch Broken", "Holy Street Torch Broken", "Holy Street Torch Snapped",
         "Emperor Statue Broken", "Wind Generator Broken"};
     const size_t CLEANUP_DEFAULT_COUNT = sizeof(CLEANUP_DEFAULT) / sizeof(CLEANUP_DEFAULT[0]);
@@ -4889,6 +4887,11 @@ namespace
                 return false;
             bool ok = atScreenshot(rest);
             atWrite(ok ? "SHOT" : "INFO", rest + ".png" + (ok ? "" : " failed"));
+            return true;
+        }
+        if (cmd == "cleanup") // the first-claim Hub clean-up, run now
+        {
+            atWrite("INFO", cleanupHub());
             return true;
         }
         if (cmd == "clear_camps")

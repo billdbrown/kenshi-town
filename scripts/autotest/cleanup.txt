@@ -1,0 +1,19 @@
+# The first-claim clean-up removes every Storm House (and Old Storm House),
+# leaving the other houses; with the squatter camps cleared, the spots come
+# out clean.
+load kt-test
+wait_ready
+wait 20
+expect exists Storm House
+camera_on Storm House
+wait 1.5
+camera_hold
+screenshot f-0-before
+cleanup
+wait 4
+expect missing Storm House
+expect exists Longhouse
+expect exists Snailhouse
+expect exists Stationhouse
+screenshot f-1-after
+quit
