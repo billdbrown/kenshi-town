@@ -11,6 +11,8 @@ Two mods:
   KenshiTownDev  development only, never shipped:
                    - every research free, instant, at the first bench tier,
                      and with no prerequisites
+                   - no Hungry (Starving) Bandits: no raids, no roaming
+                     spawns, none among the Hub's squatters
                    - "Faience Ankh", a custom-model building (asset pipeline
                      test; scripts/assets/build_ankh.cmd makes its files)
 
@@ -142,7 +144,64 @@ def dev(db):
     if count < 100:
         raise SystemExit("only %d research records found; expected ~185" % count)
     ankh(db, mod)
+    no_starving_bandits(db, mod)
     return mod
+
+
+STARVING_BANDITS = ("1305-gamedata.base", "Starving Bandits")          # Faction ("Hungry bandit" in game)
+STARVING_ASSAULTS = ("2585-gamedata.base", "Starving bandits")         # DiplomaticAssaults
+HUB_SQUATTERS = ("44426-rebirth.mod", "hub squatters")                 # SquadTemplate
+HUNGRY_BANDIT = ("1304-gamedata.base", "Hungry bandit")                # Character
+
+
+def overriding(mod, rec):
+    """The mod's override of `rec`, made if it doesn't have one yet."""
+    for r in mod.file.records:
+        if r.sid == rec.sid:
+            return r
+    return mod.override(rec)
+
+
+def no_starving_bandits(db, mod):
+    """Bill kept being raided by them (2026-11-22): off while the town is young.
+
+    Three ways in: the faction's raids on player towns (DiplomaticAssaults),
+    its squads in every biome's roaming spawns (plus a road and some bars),
+    and a Hungry bandit in the pool the Hub's own squatters are picked from.
+    Squads already out in a save stay until they're dealt with.
+    """
+    faction = base(db, STARVING_BANDITS)
+    squads = set(sid for sid, _, _, _ in faction.refs.get(b"squads", []))
+    squads |= set(sid for sid, _, _, _ in faction.refs.get(b"squad default", []))
+    for t in ("SquadTemplate",):
+        for r in db.of_type(t):
+            if any(x[0] == faction.sid for x in r.refs.get(b"faction", [])):
+                squads.add(r.sid)
+    squads.discard(kmod._b(HUB_SQUATTERS[0]))  # a mixed pool: trimmed below instead
+    if len(squads) < 3:
+        raise SystemExit("found only %d Starving Bandit squads" % len(squads))
+
+    assaults = base(db, STARVING_ASSAULTS)
+    over = overriding(mod, assaults)
+    for sid, _, _, _ in assaults.refs.get(b"assaults", []):
+        over.delete_ref("assaults", sid)
+
+    spawn_lists = {"Biomes": [b"homeless spawns"], "BiomeGroup": [b"homeless spawns"],
+                   "Road": [b"spawns"], "Town": [b"bar squads"]}
+    removed = 0
+    for type_name, categories in spawn_lists.items():
+        for r in db.of_type(type_name):
+            for cat in categories:
+                hits = [sid for sid, _, _, _ in r.refs.get(cat, []) if sid in squads]
+                if hits:
+                    over = overriding(mod, r)
+                    for sid in sorted(set(hits)):
+                        over.delete_ref(cat, sid)
+                        removed += 1
+
+    squatters = overriding(mod, base(db, HUB_SQUATTERS))
+    squatters.delete_ref("choosefrom list", base(db, HUNGRY_BANDIT).sid)
+    print("no starving bandits: %d squads, %d spawn entries removed" % (len(squads), removed))
 
 
 ANKH_DIR = os.path.join(REPO, "build", "assets", "ankh")
